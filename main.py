@@ -45,7 +45,7 @@ y_torch = F.layer_norm(x, (x.shape[-1],))
 assert torch.allclose(y_triton, y_torch, atol=1e-2, rtol=1e-2), (y_triton, y_torch)
 
 # print PTX out
-if True:
+if False:
     device = torch.cuda.current_device()
     cache_tuple = layernorm_kernel.device_caches[device]
     cache_dict = cache_tuple[0]  # The actual cache dictionary
@@ -57,31 +57,42 @@ if True:
     triton.testing.Benchmark(
         x_names=["N"],  # argument names to use as an x-axis for the plot
         x_vals=[
-            128 * i for i in range(2, 20)
+            (2**i) - 1 for i in range(8, 15)
         ],  # different possible values for `x_name`
         line_arg="provider",  # argument name whose value corresponds to a different line in the plot
         line_vals=[
-            "triton",
             "torch",
-        ],  # possible values for `line_arg``
-        line_names=["Triton", "Torch"],  # label name for the lines
-        styles=[("blue", "-"), ("green", "-"), ("red", "-")],  # line styles
+            "triton",
+            "torch_compile",
+        ],
+        line_names=["Triton", "Torch Eager", "Torch Compile"],
+        styles=[("blue", "-"), ("green", "-"), ("red", "-")],
         ylabel="GB/s",  # label name for the y-axis
-        plot_name="layernorm-performance",  # name for the plot. Used also as a file name for saving the plot.
+        plot_name="binga-performance",  # name for the plot. Used also as a file name for saving the plot.
         args={"M": 4096},  # values for function arguments not in `x_names` and `y_name`
     )
 )
 def benchmark(M, N, provider):
     x = torch.rand((M, N), device=DEVICE, dtype=torch.float32)
     quantiles = [0.5, 0.2, 0.8]
+
     if provider == "torch":
         ms, min_ms, max_ms = triton.testing.do_bench(
             lambda: F.layer_norm(x, (x.shape[-1],)),
             quantiles=quantiles,
         )
-    if provider == "triton":
+    elif provider == "triton":
         ms, min_ms, max_ms = triton.testing.do_bench(
-            lambda: layernorm(x), quantiles=quantiles
+            lambda: layernorm(x),
+            quantiles=quantiles,
+        )
+    elif provider == "torch_compile":
+        compiled_fn = torch.compile(lambda: F.layer_norm(x, (x.shape[-1],)))
+        # Warmup to trigger compilation
+        compiled_fn()
+        ms, min_ms, max_ms = triton.testing.do_bench(
+            compiled_fn,
+            quantiles=quantiles,
         )
 
     def gbps(ms):
