@@ -8,6 +8,7 @@ import triton
 import triton.language as tl
 from liger_kernel.transformers import LigerLayerNorm
 from hypothesis import given, settings, strategies as st
+from triton.testing import do_bench
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
@@ -79,8 +80,7 @@ def validate(max_examples: int = 100, seed: int | None = None):
         y_torch = F.layer_norm(x, norm_shape, weight, bias)
 
         assert torch.allclose(y_custom, y_torch, atol=TOLS[dtype], rtol=TOLS[dtype]), (
-            f"Mismatch for shape=({m}, {n}), dtype={dtype}\n"
-            f"Max abs diff: {(y_custom - y_torch).abs().max().item():.2e}"
+            f"Mismatch for shape=({m}, {n}), dtype={dtype}\nMax abs diff: {(y_custom - y_torch).abs().max().item():.2e}"
         )
 
     print(f"Running {max_examples} property-based tests...")
@@ -91,6 +91,32 @@ def validate(max_examples: int = 100, seed: int | None = None):
 
     check_layernorm()
     print("✓ All tests passed!")
+
+
+def handle_fwd(provider, q, x, norm_shape, weight, bias):
+    match Kernel(provider):
+        case Kernel.TCH:
+            f = lambda: F.layer_norm(x, norm_shape, weight=weight, bias=bias)
+        case Kernel.CUSTOM:
+            f = lambda: CustomLayerNorm.apply(x, norm_shape, weight, bias)
+        case Kernel.TCH_CMP:
+            f = torch.compile(
+                lambda: F.layer_norm(x, norm_shape, weight=weight, bias=bias),
+                mode="max-autotune-no-cudagraphs",
+            )
+            for _ in range(3):
+                f()  # warm up
+        case Kernel.LIGER:
+            ln = LigerLayerNorm(hidden_size=norm_shape, eps=1e-5)
+            ln.weight = torch.nn.Parameter(weight)
+            ln.bias = torch.nn.Parameter(bias)
+            f = lambda: ln(x)
+
+    ms, min_ms, max_ms = do_bench(
+        f,
+        quantiles=q,
+    )
+    return ms, min_ms, max_ms
 
 
 @app.command
@@ -120,7 +146,7 @@ def bench(
             line_names=Kernel.line_names(),
             styles=[("blue", "-"), ("green", "--"), ("red", "-"), ("pink", "--")],
             ylabel="GB/s",
-            plot_name=f"layernorm-fwd-{dtype.value}",
+            plot_name=f"layernorm-{mode.value}-{dtype.value}",
             args={"M": m, "mode": mode, "torch_dtype": torch_dtype},
         )
     )
@@ -133,39 +159,7 @@ def bench(
 
         match Mode(mode):
             case Mode.FORWARD:
-                match Kernel(provider):
-                    case Kernel.TCH:
-                        ms, min_ms, max_ms = triton.testing.do_bench(
-                            lambda: F.layer_norm(
-                                x, norm_shape, weight=weight, bias=bias
-                            ),
-                            quantiles=q,
-                        )
-                    case Kernel.CUSTOM:
-                        ms, min_ms, max_ms = triton.testing.do_bench(
-                            lambda: CustomLayerNorm.apply(x, norm_shape, weight, bias),
-                            quantiles=q,
-                        )
-                    case Kernel.TCH_CMP:
-                        compiled_fn = torch.compile(
-                            lambda: F.layer_norm(
-                                x, norm_shape, weight=weight, bias=bias
-                            ),
-                            mode="max-autotune-no-cudagraphs",
-                        )
-                        compiled_fn()  # warm
-                        ms, min_ms, max_ms = triton.testing.do_bench(
-                            compiled_fn,
-                            quantiles=q,
-                        )
-                    case Kernel.LIGER:
-                        ln = LigerLayerNorm(hidden_size=norm_shape, eps=1e-5)
-                        ln.weight = torch.nn.Parameter(weight)
-                        ln.bias = torch.nn.Parameter(bias)
-                        ms, min_ms, max_ms = triton.testing.do_bench(
-                            lambda: ln(x),
-                            quantiles=q,
-                        )
+                ms, min_ms, max_ms = handle_fwd(provider, q, x, norm_shape, weight, bias)
             case Mode.BACKWARD:
                 print("backward")
 
