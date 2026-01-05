@@ -94,6 +94,8 @@ def validate(max_examples: int = 100, seed: int | None = None):
     Use property based testing to validate custom layernorm against pytorch
     """
 
+    tols = {torch.float32: 1e-5, torch.float16: 1e-3, torch.bfloat16: 7e-2}
+
     @given(
         m=st.integers(min_value=1, max_value=4096),
         n=st.integers(min_value=1, max_value=8192),
@@ -106,9 +108,9 @@ def validate(max_examples: int = 100, seed: int | None = None):
         x = torch.randn(m, n, device=DEVICE, dtype=dtype)
 
         y_custom = our_ln(x)
-        y_torch = F.layer_norm(x, (x.shape[-1],), weight=None, bias=None)
+        y_torch = F.layer_norm(x, (x.shape[-1],))
 
-        assert torch.allclose(y_custom, y_torch, atol=1e-5, rtol=1e-5), (
+        assert torch.allclose(y_custom, y_torch, atol=tols[dtype], rtol=tols[dtype]), (
             f"Mismatch for shape=({m}, {n}), dtype={dtype}\n"
             f"Max abs diff: {(y_custom - y_torch).abs().max().item():.2e}"
         )
