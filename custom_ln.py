@@ -59,7 +59,6 @@ class CustomLayerNorm(torch.autograd.Function):
         BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(N))
         if N > BLOCK_SIZE:
             raise RuntimeError("This layer norm doesn't support feature dim >= 64KB.")
-        num_warps = min(max(BLOCK_SIZE // 256, 1), 8)
         _layer_norm_fwd_fused[(M,)](  #
             x_arg,
             y,
@@ -70,11 +69,10 @@ class CustomLayerNorm(torch.autograd.Function):
             x_arg.stride(0),
             N,
             eps,  #
-            OUT_DT=tch_to_trt[x.dtype],
             BLOCK_SIZE=BLOCK_SIZE,
+            OUT_DT=tch_to_trt[x.dtype],
         )
         ctx.save_for_backward(x, weight, bias, mean, rstd)
         ctx.BLOCK_SIZE = BLOCK_SIZE
-        ctx.num_warps = num_warps
         ctx.eps = eps
         return y

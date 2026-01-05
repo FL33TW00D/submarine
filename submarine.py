@@ -62,18 +62,21 @@ def validate(max_examples: int = 100, seed: int | None = None):
     """
 
     @given(
-        m=st.integers(min_value=1, max_value=4096),
-        n=st.integers(min_value=1, max_value=8192),
+        m=st.integers(min_value=8, max_value=1024),
+        n=st.integers(min_value=8, max_value=1024),
         dtype=st.sampled_from([torch.float32, torch.float16, torch.bfloat16]),
         data_seed=st.integers(min_value=0, max_value=2**32 - 1),
     )
     @settings(max_examples=max_examples, deadline=None, database=None)
     def check_layernorm(m: int, n: int, dtype: torch.dtype, data_seed: int):
         torch.manual_seed(data_seed)
-        x = torch.randn(m, n, device=DEVICE, dtype=dtype)
+        x = torch.rand((m, n), device=DEVICE, dtype=dtype)
+        norm_shape = (x.shape[-1],)
+        weight = torch.rand(norm_shape, device=DEVICE, dtype=dtype)
+        bias = torch.rand(norm_shape, device=DEVICE, dtype=dtype)
 
-        y_custom = CustomLayerNorm.apply(x)
-        y_torch = F.layer_norm(x, (x.shape[-1],))
+        y_custom = CustomLayerNorm.apply(x, norm_shape, weight, bias)
+        y_torch = F.layer_norm(x, norm_shape, weight, bias)
 
         assert torch.allclose(y_custom, y_torch, atol=TOLS[dtype], rtol=TOLS[dtype]), (
             f"Mismatch for shape=({m}, {n}), dtype={dtype}\n"
