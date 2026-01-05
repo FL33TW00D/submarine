@@ -11,6 +11,7 @@ NUM_SM = properties["multiprocessor_count"]
 NUM_REGS = properties["max_num_regs"]
 SIZE_SMEM = properties["max_shared_mem"]
 WARP_SIZE = properties["warpSize"]
+
 print("DEVICE PROPERTIES")
 print("NUM SM: ", NUM_SM)
 print("NUM REG: ", NUM_REGS)

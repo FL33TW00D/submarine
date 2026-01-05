@@ -53,7 +53,7 @@ def layernorm_fwd_kernel(
     pid = tl.program_id(0)
     offs = tl.arange(0, BLOCK_SIZE)
     irange = pid * N + offs
-    x = tl.load(x_ptr + irange, offs < N, other=0.0)
+    x = tl.load(x_ptr + irange, offs < N, other=0.0).to(tl.float32)
     mu = tl.sum(x) / N
     x_shift = x - mu
     var = tl.sum(x_shift * x_shift) / N
@@ -109,9 +109,9 @@ def validate(max_examples: int = 100, seed: int | None = None):
         x = torch.randn(m, n, device=DEVICE, dtype=dtype)
 
         y_custom = our_ln(x)
-        y_torch = F.layer_norm(x, (x.shape[-1],))
+        y_torch = F.layer_norm(x, (x.shape[-1],), weight=None, bias=None)
 
-        assert torch.allclose(y_custom, y_torch, atol=1e-2, rtol=1e-2), (
+        assert torch.allclose(y_custom, y_torch, atol=1e-5, rtol=1e-5), (
             f"Mismatch for shape=({m}, {n}), dtype={dtype}\n"
             f"Max abs diff: {(y_custom - y_torch).abs().max().item():.2e}"
         )
