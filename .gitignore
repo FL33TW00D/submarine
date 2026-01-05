@@ -12,3 +12,4 @@ wheels/
 *.csv
 *.ncu-rep
 *.html
+.hypothesis/**

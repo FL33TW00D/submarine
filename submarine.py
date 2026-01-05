@@ -6,6 +6,7 @@ import torch.nn.functional as F
 import triton
 import triton.language as tl
 from liger_kernel.transformers import LigerLayerNorm
+from hypothesis import given, settings, strategies as st
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
@@ -69,41 +70,60 @@ def our_ln(x: torch.Tensor, eps: float = 1e-5) -> torch.Tensor:
     return output
 
 
-@app.command
-def validate(
-    dtype: Dtype,
-    m: int = 1823,
-    n: int = 781,
-    atol: float = 1e-2,
-    rtol: float = 1e-2,
-    seed: int = 0,
-):
-    """Validate the custom layernorm kernel against torch.
-
-    Args:
-        dtype: Data type for the tensors.
-        m: Number of rows.
-        n: Number of columns.
-        atol: Absolute tolerance for comparison.
-        rtol: Relative tolerance for comparison.
-        seed: Random seed.
-    """
+@given(
+    m=st.integers(min_value=1, max_value=4096),
+    n=st.integers(min_value=1, max_value=8192),
+    dtype=st.sampled_from([torch.float32, torch.float16, torch.bfloat16]),
+    seed=st.integers(min_value=0, max_value=2**32 - 1),
+)
+@settings(max_examples=100, deadline=None)
+def test_layernorm_matches_torch(m: int, n: int, dtype: torch.dtype, seed: int):
     torch.manual_seed(seed)
-    torch_dtype = dtype.to_torch()
-    x = torch.randn(m, n, device=DEVICE, dtype=torch_dtype)
 
-    y_triton = our_ln(x)
+    x = torch.randn(m, n, device=DEVICE, dtype=dtype)
+
+    y_custom = our_ln(x)
     y_torch = F.layer_norm(x, (x.shape[-1],))
 
-    if torch.allclose(y_triton, y_torch, atol=atol, rtol=rtol):
-        print(f"✓ Validation passed for {dtype.value} with shape ({m}, {n})")
-        print(f"  Max absolute diff: {(y_triton - y_torch).abs().max().item():.2e}")
-    else:
-        print(f"✗ Validation FAILED for {dtype.value} with shape ({m}, {n})")
-        print(f"  Max absolute diff: {(y_triton - y_torch).abs().max().item():.2e}")
-        print(f"  Triton output sample: {y_triton[0, :5]}")
-        print(f"  Torch output sample:  {y_torch[0, :5]}")
-        raise SystemExit(1)
+    assert torch.allclose(y_custom, y_torch, atol=1e-5, rtol=1e-5), (
+        f"Mismatch for shape=({m}, {n}), dtype={dtype}\n"
+        f"Max abs diff: {(y_custom - y_torch).abs().max().item():.2e}"
+    )
+
+
+@app.command
+def validate(max_examples: int = 100, seed: int | None = None):
+    """
+    Use property based testing to validate custom layernorm against pytorch
+    """
+
+    @given(
+        m=st.integers(min_value=1, max_value=4096),
+        n=st.integers(min_value=1, max_value=8192),
+        dtype=st.sampled_from([torch.float32, torch.float16, torch.bfloat16]),
+        data_seed=st.integers(min_value=0, max_value=2**32 - 1),
+    )
+    @settings(max_examples=max_examples, deadline=None, database=None)
+    def check_layernorm(m: int, n: int, dtype: torch.dtype, data_seed: int):
+        torch.manual_seed(data_seed)
+        x = torch.randn(m, n, device=DEVICE, dtype=dtype)
+
+        y_custom = our_ln(x)
+        y_torch = F.layer_norm(x, (x.shape[-1],))
+
+        assert torch.allclose(y_custom, y_torch, atol=1e-2, rtol=1e-2), (
+            f"Mismatch for shape=({m}, {n}), dtype={dtype}\n"
+            f"Max abs diff: {(y_custom - y_torch).abs().max().item():.2e}"
+        )
+
+    print(f"Running {max_examples} property-based tests...")
+    if seed is not None:
+        import random
+
+        random.seed(seed)
+
+    check_layernorm()
+    print("✓ All tests passed!")
 
 
 @app.command
