@@ -13,6 +13,18 @@ tch_to_trt = {
 }
 
 
+@triton.autotune(
+    configs=[
+        triton.Config({}, num_warps=4, num_stages=1),
+        triton.Config({}, num_warps=8, num_stages=1),
+        triton.Config({}, num_warps=16, num_stages=1),
+        triton.Config({}, num_warps=32, num_stages=1),
+        triton.Config({}, num_warps=4, num_stages=2),
+        triton.Config({}, num_warps=8, num_stages=2),
+        triton.Config({}, num_warps=16, num_stages=2),
+    ],
+    key=["N", "BLOCK_SIZE"],
+)
 @triton.jit
 def _layer_norm_fwd_fused(
     x_ptr,  # pointer to the input
@@ -21,7 +33,6 @@ def _layer_norm_fwd_fused(
     b_ptr,  # pointer to the biases
     mu_ptr,  # pointer to the mean
     rstd_ptr,  # pointer to the 1/std
-    stride,  # how much to increase the pointer when moving by 1 row
     N,  # number of columns in X
     eps,  # epsilon to avoid division by zero
     BLOCK_SIZE: tl.constexpr,
@@ -39,14 +50,14 @@ def _layer_norm_fwd_fused(
 
     var = tl.sum(x_shift * x_shift) / N
 
-    w = tl.load(w_ptr + offs, local_mask).to(tl.float32)
-    b = tl.load(b_ptr + offs, local_mask).to(tl.float32)
-
     rstd = tl.rsqrt(var + eps)
 
     tl.store(rstd_ptr + pid, rstd)
 
-    x_norm = w * (x_shift * rstd) + b
+    w = tl.load(w_ptr + offs, local_mask).to(tl.float32)
+    b = tl.load(b_ptr + offs, local_mask).to(tl.float32)
+
+    x_norm = tl.fma((x_shift * rstd), w, b)
     tl.store(y_ptr + irange, x_norm.to(OUT_DT), local_mask)
 
 
@@ -59,15 +70,7 @@ def calculate_settings(n):
         raise RuntimeError(
             f"Cannot launch Triton kernel since n = {n} exceeds the recommended Triton blocksize = {MAX_FUSED_SIZE}."
         )
-
-    num_warps = 4
-    if BLOCK_SIZE >= 32768:
-        num_warps = 32
-    elif BLOCK_SIZE >= 8192:
-        num_warps = 16
-    elif BLOCK_SIZE >= 2048:
-        num_warps = 8
-    return BLOCK_SIZE, num_warps
+    return BLOCK_SIZE
 
 
 class CustomLayerNorm(torch.autograd.Function):
@@ -79,7 +82,7 @@ class CustomLayerNorm(torch.autograd.Function):
         M, N = x_arg.shape
         mean = torch.empty((M,), dtype=torch.float32, device=x.device)
         rstd = torch.empty((M,), dtype=torch.float32, device=x.device)
-        BLOCK_SIZE, num_warps = calculate_settings(N)
+        BLOCK_SIZE = calculate_settings(N)
         _layer_norm_fwd_fused[(M,)](  #
             x_arg,
             y,
@@ -87,11 +90,9 @@ class CustomLayerNorm(torch.autograd.Function):
             bias,
             mean,
             rstd,  #
-            x_arg.stride(0),
             N,
             eps,  #
             BLOCK_SIZE=BLOCK_SIZE,
-            num_warps=num_warps,
             OUT_DT=tch_to_trt[x.dtype],
         )
         ctx.save_for_backward(x, weight, bias, mean, rstd)

@@ -6,9 +6,7 @@ DEVICE = triton.runtime.driver.active.get_active_torch_device()
 torch.manual_seed(0)
 x = torch.randn(512, 2048, device=DEVICE)
 
-compiled_fn = torch.compile(
-    lambda: F.layer_norm(x, (x.shape[-1],)), mode="max-autotune-no-cudagraphs"
-)
+compiled_fn = torch.compile(lambda: F.layer_norm(x, (x.shape[-1],)), mode="max-autotune-no-cudagraphs")
 
 for _ in range(3):
     compiled_fn()
