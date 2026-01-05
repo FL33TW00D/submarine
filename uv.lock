@@ -221,6 +221,19 @@ wheels = [
 ]
 
 [[package]]
+name = "liger-kernel-nightly"
+version = "0.6.4.dev20260102122147"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "torch" },
+    { name = "triton" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8b/26/dcc76a0f78a0e768223620ad448fe9ba0d107bf01d09fa2859100ca9432b/liger_kernel_nightly-0.6.4.dev20260102122147.tar.gz", hash = "sha256:c35dff933b88d9c23ed40e804dd467d0bbb188b6b83627ff0e7b7c41d55deda0", size = 3753258, upload-time = "2026-01-02T12:21:57.062Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f7/62/2b69ef94280775f1619f5dba3f6603819df910a5ab8a00273db6d23b2fb6/liger_kernel_nightly-0.6.4.dev20260102122147-py3-none-any.whl", hash = "sha256:25db7cd36bb01829b47a39a2219600c4a0f466971757ff033c834141bc2b4536", size = 257564, upload-time = "2026-01-02T12:21:55.654Z" },
+]
+
+[[package]]
 name = "markupsafe"
 version = "3.0.3"
 source = { registry = "https://pypi.org/simple" }
@@ -728,6 +741,7 @@ name = "submarine"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "liger-kernel-nightly" },
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "pandas" },
@@ -737,6 +751,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "liger-kernel-nightly", specifier = ">=0.6.4.dev20260102122147" },
     { name = "matplotlib", specifier = ">=3.10.8" },
     { name = "numpy", specifier = ">=2.4.0" },
     { name = "pandas", specifier = ">=2.3.3" },

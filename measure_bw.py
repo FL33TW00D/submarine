@@ -15,7 +15,7 @@ def measure_bandwidth():
     torch.cuda.synchronize()
 
     ms = start.elapsed_time(end)
-    gb = 2 * x.numel() * 4 / 1e9  # read + write
+    gb = 2 * x.numel() * 4 / 1e9
     print(f"Measured bandwidth: {gb / (ms / 1000):.1f} GB/s")
 
 
