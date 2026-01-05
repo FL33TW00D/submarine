@@ -38,8 +38,8 @@ def _layer_norm_fwd_fused(
 
     var = tl.sum(x_shift * x_shift) / N
 
-    w = tl.load(w_ptr + pid).to(tl.float32)
-    b = tl.load(b_ptr + pid).to(tl.float32)
+    w = tl.load(w_ptr + offs, local_mask).to(tl.float32)
+    b = tl.load(b_ptr + offs, local_mask).to(tl.float32)
 
     x_norm = w * (x_shift * tl.rsqrt(var + eps)) + b
     tl.store(y_ptr + irange, x_norm.to(OUT_DT), local_mask)

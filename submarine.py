@@ -62,8 +62,8 @@ def validate(max_examples: int = 100, seed: int | None = None):
     """
 
     @given(
-        m=st.integers(min_value=8, max_value=1024),
-        n=st.integers(min_value=8, max_value=1024),
+        m=st.integers(min_value=8, max_value=4096),
+        n=st.integers(min_value=8, max_value=4096),
         dtype=st.sampled_from([torch.float32, torch.float16, torch.bfloat16]),
         data_seed=st.integers(min_value=0, max_value=2**32 - 1),
     )
