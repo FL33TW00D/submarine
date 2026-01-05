@@ -1,3 +1,4 @@
+from custom_ln import CustomLayerNorm
 import enum
 
 import cyclopts
@@ -11,6 +12,19 @@ from hypothesis import given, settings, strategies as st
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 app = cyclopts.App()
+
+tch_to_trt = {
+    torch.float32: tl.float32,
+    torch.float16: tl.float16,
+    torch.bfloat16: tl.bfloat16,
+}
+
+TOLS = {torch.float32: 1e-5, torch.float16: 1e-3, torch.bfloat16: 7e-2}
+
+
+class Mode(enum.Enum):
+    FORWARD = "forward"
+    BACKWARD = "backward"
 
 
 class Dtype(enum.Enum):
@@ -41,60 +55,11 @@ class Kernel(enum.Enum):
         return [k.value.title() for k in cls]
 
 
-@triton.jit
-def layernorm_fwd_kernel(
-    x_ptr,
-    o_ptr,
-    M,
-    N,
-    eps,
-    BLOCK_SIZE: tl.constexpr,
-    OUT_DTYPE: tl.constexpr,
-):
-    pid = tl.program_id(0)
-    offs = tl.arange(0, BLOCK_SIZE)
-    local_mask = offs < N
-    vrange = pid * N + offs
-    x = tl.load(x_ptr + vrange, local_mask, other=0.0).to(tl.float32)
-    mu = tl.sum(x) / N
-
-    x_shift = tl.where(local_mask, x - mu, 0.0)
-
-    var = tl.sum(x_shift * x_shift) / N
-    x_norm = x_shift * tl.rsqrt(var + eps)
-    tl.store(o_ptr + vrange, x_norm.to(OUT_DTYPE), local_mask)
-
-
-def our_ln(x: torch.Tensor, eps: float = 1e-5) -> torch.Tensor:
-    output = torch.empty_like(x)
-    assert x.device == DEVICE and output.device == DEVICE
-    M, N = output.shape
-    BLOCK_SIZE = triton.next_power_of_2(N)
-    dtype_map = {
-        torch.float32: tl.float32,
-        torch.float16: tl.float16,
-        torch.bfloat16: tl.bfloat16,
-    }
-
-    layernorm_fwd_kernel[(M, 1, 1)](
-        x,
-        output,
-        M,
-        N,
-        eps,
-        BLOCK_SIZE=BLOCK_SIZE,
-        OUT_DTYPE=dtype_map[x.dtype],
-    )
-    return output
-
-
 @app.command
 def validate(max_examples: int = 100, seed: int | None = None):
     """
     Use property based testing to validate custom layernorm against pytorch
     """
-
-    tols = {torch.float32: 1e-5, torch.float16: 1e-3, torch.bfloat16: 7e-2}
 
     @given(
         m=st.integers(min_value=1, max_value=4096),
@@ -107,10 +72,10 @@ def validate(max_examples: int = 100, seed: int | None = None):
         torch.manual_seed(data_seed)
         x = torch.randn(m, n, device=DEVICE, dtype=dtype)
 
-        y_custom = our_ln(x)
+        y_custom = CustomLayerNorm.apply(x)
         y_torch = F.layer_norm(x, (x.shape[-1],))
 
-        assert torch.allclose(y_custom, y_torch, atol=tols[dtype], rtol=tols[dtype]), (
+        assert torch.allclose(y_custom, y_torch, atol=TOLS[dtype], rtol=TOLS[dtype]), (
             f"Mismatch for shape=({m}, {n}), dtype={dtype}\n"
             f"Max abs diff: {(y_custom - y_torch).abs().max().item():.2e}"
         )
@@ -127,6 +92,7 @@ def validate(max_examples: int = 100, seed: int | None = None):
 
 @app.command
 def bench(
+    mode: Mode,
     dtype: Dtype,
     m: int = 2048,
     save_path: str = ".",
@@ -152,41 +118,53 @@ def bench(
             styles=[("blue", "-"), ("green", "--"), ("red", "-"), ("pink", "--")],
             ylabel="GB/s",
             plot_name=f"layernorm-fwd-{dtype.value}",
-            args={"M": m, "torch_dtype": torch_dtype},
+            args={"M": m, "mode": mode, "torch_dtype": torch_dtype},
         )
     )
-    def benchmark_fn(M, N, provider, torch_dtype):
+    def benchmark_fn(M, N, provider, mode, torch_dtype):
         x = torch.rand((M, N), device=DEVICE, dtype=torch_dtype)
-        quantiles = [0.5, 0.2, 0.8]
+        q = [0.5, 0.2, 0.8]
         norm_shape = (x.shape[-1],)
+        weight = torch.rand(norm_shape, device=DEVICE, dtype=torch_dtype)
+        bias = torch.rand(norm_shape, device=DEVICE, dtype=torch_dtype)
 
-        match Kernel(provider):
-            case Kernel.TCH:
-                ms, min_ms, max_ms = triton.testing.do_bench(
-                    lambda: F.layer_norm(x, norm_shape),
-                    quantiles=quantiles,
-                )
-            case Kernel.CUSTOM:
-                ms, min_ms, max_ms = triton.testing.do_bench(
-                    lambda: our_ln(x),
-                    quantiles=quantiles,
-                )
-            case Kernel.TCH_CMP:
-                compiled_fn = torch.compile(
-                    lambda: F.layer_norm(x, norm_shape),
-                    mode="max-autotune-no-cudagraphs",
-                )
-                compiled_fn()  # warm
-                ms, min_ms, max_ms = triton.testing.do_bench(
-                    compiled_fn,
-                    quantiles=quantiles,
-                )
-            case Kernel.LIGER:
-                ln = LigerLayerNorm(hidden_size=norm_shape).cuda()
-                ms, min_ms, max_ms = triton.testing.do_bench(
-                    lambda: ln(x),
-                    quantiles=quantiles,
-                )
+        match Mode(mode):
+            case Mode.FORWARD:
+                match Kernel(provider):
+                    case Kernel.TCH:
+                        ms, min_ms, max_ms = triton.testing.do_bench(
+                            lambda: F.layer_norm(
+                                x, norm_shape, weight=weight, bias=bias
+                            ),
+                            quantiles=q,
+                        )
+                    case Kernel.CUSTOM:
+                        ms, min_ms, max_ms = triton.testing.do_bench(
+                            lambda: CustomLayerNorm.apply(x, norm_shape, weight, bias),
+                            quantiles=q,
+                        )
+                    case Kernel.TCH_CMP:
+                        compiled_fn = torch.compile(
+                            lambda: F.layer_norm(
+                                x, norm_shape, weight=weight, bias=bias
+                            ),
+                            mode="max-autotune-no-cudagraphs",
+                        )
+                        compiled_fn()  # warm
+                        ms, min_ms, max_ms = triton.testing.do_bench(
+                            compiled_fn,
+                            quantiles=q,
+                        )
+                    case Kernel.LIGER:
+                        ln = LigerLayerNorm(hidden_size=norm_shape, eps=1e-5)
+                        ln.weight = torch.nn.Parameter(weight)
+                        ln.bias = torch.nn.Parameter(bias)
+                        ms, min_ms, max_ms = triton.testing.do_bench(
+                            lambda: ln(x),
+                            quantiles=q,
+                        )
+            case Mode.BACKWARD:
+                print("backward")
 
         def gbps(ms):
             return 2 * x.numel() * x.element_size() * 1e-9 / (ms * 1e-3)
