@@ -58,10 +58,10 @@ if False:
 
 
 class Kernel(enum.Enum):
-    TCH = (1,)
-    TCH_CMP = (2,)
-    LIGER = (3,)
-    CUSTOM = (4,)
+    TCH = "torch"
+    TCH_CMP = "torch_compile"
+    LIGER = "liger"
+    CUSTOM = "custom"
 
 
 @triton.testing.perf_report(
@@ -85,7 +85,7 @@ class Kernel(enum.Enum):
     )
 )
 def benchmark(M, N, provider):
-    x = torch.rand((M, N), device=DEVICE, dtype=torch.float32)
+    x = torch.rand((M, N), device=DEVICE, dtype=torch.bfloat16)
     quantiles = [0.5, 0.2, 0.8]
 
     norm_shape = (x.shape[-1],)
@@ -105,7 +105,7 @@ def benchmark(M, N, provider):
         compiled_fn = torch.compile(
             lambda: F.layer_norm(x, norm_shape), mode="max-autotune-no-cudagraphs"
         )
-        compiled_fn()
+        compiled_fn()  # warm
         ms, min_ms, max_ms = triton.testing.do_bench(
             compiled_fn,
             quantiles=quantiles,

@@ -11,3 +11,4 @@ wheels/
 *.png
 *.csv
 *.ncu-rep
+*.html

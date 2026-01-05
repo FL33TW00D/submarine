@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "cyclopts>=4.4.4",
     "liger-kernel-nightly>=0.6.4.dev20260102122147",
     "matplotlib>=3.10.8",
     "numpy>=2.4.0",
