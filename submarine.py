@@ -44,7 +44,7 @@ class Kernel(enum.Enum):
 @triton.jit
 def layernorm_fwd_kernel(
     x_ptr,
-    output_ptr,
+    o_ptr,
     M,
     N,
     eps,
@@ -54,15 +54,15 @@ def layernorm_fwd_kernel(
     pid = tl.program_id(0)
     offs = tl.arange(0, BLOCK_SIZE)
     local_mask = offs < N
-    irange = pid * N + offs
-    x = tl.load(x_ptr + irange, local_mask, other=0.0).to(tl.float32)
+    vrange = pid * N + offs
+    x = tl.load(x_ptr + vrange, local_mask, other=0.0).to(tl.float32)
     mu = tl.sum(x) / N
 
     x_shift = tl.where(local_mask, x - mu, 0.0)
 
     var = tl.sum(x_shift * x_shift) / N
     x_norm = x_shift * tl.rsqrt(var + eps)
-    tl.store(output_ptr + irange, x_norm.to(OUT_DTYPE), local_mask)
+    tl.store(o_ptr + vrange, x_norm.to(OUT_DTYPE), local_mask)
 
 
 def our_ln(x: torch.Tensor, eps: float = 1e-5) -> torch.Tensor:
