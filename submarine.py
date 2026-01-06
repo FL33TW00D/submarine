@@ -57,7 +57,7 @@ class Kernel(enum.Enum):
 
 
 @app.command
-def validate(max_examples: int = 100, seed: int | None = None):
+def validate(mode: Mode, max_examples: int = 100, seed: int | None = None):
     """
     Use property based testing to validate custom layernorm against pytorch
     """
@@ -69,7 +69,7 @@ def validate(max_examples: int = 100, seed: int | None = None):
         data_seed=st.integers(min_value=0, max_value=2**32 - 1),
     )
     @settings(max_examples=max_examples, deadline=None, database=None)
-    def check_layernorm(m: int, n: int, dtype: torch.dtype, data_seed: int):
+    def check_ln_fwd(m: int, n: int, dtype: torch.dtype, data_seed: int):
         torch.manual_seed(data_seed)
         x = torch.rand((m, n), device=DEVICE, dtype=dtype)
         norm_shape = (x.shape[-1],)
@@ -83,13 +83,52 @@ def validate(max_examples: int = 100, seed: int | None = None):
             f"Mismatch for shape=({m}, {n}), dtype={dtype}\nMax abs diff: {(y_custom - y_torch).abs().max().item():.2e}"
         )
 
+    @given(
+        m=st.integers(min_value=8, max_value=4096),
+        n=st.integers(min_value=8, max_value=4096),
+        dtype=st.sampled_from([torch.float32, torch.float16, torch.bfloat16]),
+        data_seed=st.integers(min_value=0, max_value=2**32 - 1),
+    )
+    @settings(max_examples=max_examples, deadline=None, database=None)
+    def check_ln_bwd(m: int, n: int, dtype: torch.dtype, data_seed: int):
+        torch.manual_seed(data_seed)
+
+        x = torch.rand((m, n), device=DEVICE, dtype=dtype)
+        x.requires_grad = True
+        norm_shape = (x.shape[-1],)
+        weight = torch.rand(norm_shape, device=DEVICE, dtype=dtype)
+        bias = torch.rand(norm_shape, device=DEVICE, dtype=dtype)
+        dy = 0.1 * torch.randn_like(x)
+
+        y_custom = CustomLayerNorm.apply(x, norm_shape, weight, bias)
+        y_custom.backward(dy, retain_graph=True)
+        dx_tri, dw_tri, db_tri = [_.grad.clone() for _ in [x, weight, bias]]
+
+        y_torch = F.layer_norm(x, norm_shape, weight, bias)
+        y_torch.backward(dy, retain_graph=True)
+        dx_ref, dw_ref, db_ref = [_.grad.clone() for _ in [x, weight, bias]]
+
+        assert torch.allclose(dx_ref, dx_tri, atol=TOLS[dtype], rtol=TOLS[dtype]), (
+            f"Mismatch for DX, shape=({m}, {n}), dtype={dtype}\nMax abs diff: {(dx_ref - dx_tri).abs().max().item():.2e}"
+        )
+        assert torch.allclose(dw_ref, dw_tri, atol=TOLS[dtype], rtol=TOLS[dtype]), (
+            f"Mismatch for DW, shape=({m}, {n}), dtype={dtype}\nMax abs diff: {(dx_ref - dx_tri).abs().max().item():.2e}"
+        )
+        assert torch.allclose(db_ref, db_tri, atol=TOLS[dtype], rtol=TOLS[dtype]), (
+            f"Mismatch for DB, shape=({m}, {n}), dtype={dtype}\nMax abs diff: {(dx_ref - dx_tri).abs().max().item():.2e}"
+        )
+
     print(f"Running {max_examples} property-based tests...")
     if seed is not None:
         import random
 
         random.seed(seed)
 
-    check_layernorm()
+    match Mode(mode):
+        case Mode.FORWARD:
+            check_ln_fwd()
+        case Mode.BACKWARD:
+            check_ln_bwd()
     print("✓ All tests passed!")
 
 
@@ -111,6 +150,37 @@ def handle_fwd(provider, q, x, norm_shape, weight, bias):
             ln.weight = torch.nn.Parameter(weight)
             ln.bias = torch.nn.Parameter(bias)
             f = lambda: ln(x)
+
+    ms, min_ms, max_ms = do_bench(
+        f,
+        quantiles=q,
+    )
+    return ms, min_ms, max_ms
+
+
+def handle_bwd(provider, q, x, norm_shape, weight, bias, dLdy):
+    x.requires_grad_(True)
+    match Kernel(provider):
+        case Kernel.TCH:
+            ref = F.layer_norm(x, norm_shape, weight=weight, bias=bias)
+            f = lambda: ref.backward(dLdy, retain_graph=True)
+        case Kernel.CUSTOM:
+            ref = CustomLayerNorm.apply(x, norm_shape, weight, bias)
+            f = lambda: ref.backward(dLdy, retain_graph=True)
+        case Kernel.TCH_CMP:
+            ref = F.layer_norm(x, norm_shape, weight=weight, bias=bias)
+            f = torch.compile(
+                lambda: ref.backward(dLdy, retain_graph=True),
+                mode="max-autotune-no-cudagraphs",
+            )
+            for _ in range(3):
+                f()  # warm up
+        case Kernel.LIGER:
+            ln = LigerLayerNorm(hidden_size=norm_shape, eps=1e-5)
+            ln.weight = torch.nn.Parameter(weight)
+            ln.bias = torch.nn.Parameter(bias)
+            ref = ln(x)
+            f = lambda: ref.backward(dLdy, retain_graph=True)
 
     ms, min_ms, max_ms = do_bench(
         f,
@@ -184,12 +254,13 @@ def bench(
         norm_shape = (x.shape[-1],)
         weight = torch.rand(norm_shape, device=DEVICE, dtype=torch_dtype)
         bias = torch.rand(norm_shape, device=DEVICE, dtype=torch_dtype)
+        dy = 0.1 * torch.randn_like(x)
 
         match Mode(mode):
             case Mode.FORWARD:
                 ms, min_ms, max_ms = handle_fwd(provider, q, x, norm_shape, weight, bias)
             case Mode.BACKWARD:
-                print("backward")
+                ms, min_ms, max_ms = handle_bwd(provider, q, x, norm_shape, weight, bias, dy)
 
         def gbps(ms):
             return 2 * x.numel() * x.element_size() * 1e-9 / (ms * 1e-3)

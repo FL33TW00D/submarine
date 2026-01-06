@@ -61,6 +61,27 @@ def _layer_norm_fwd_fused(
     tl.store(y_ptr + irange, x_norm.to(OUT_DT), local_mask)
 
 
+@triton.jit
+def _layer_norm_bwd_fused(
+    dLdy_ptr,  # pointer to dLdy
+    x_ptr,  # pointer to input
+    w_ptr,  # pointer to weight
+    mu_ptr,  # pointer to cached mu
+    rstd_ptr,  # pointer to cached rstd
+    dx_ptr,  # pointer to output dX
+    dw_ptr,  # pointer to output dW
+    db_ptr,  # pointer to output dB
+    N,  # number of columns in X
+    BLOCK_SIZE: tl.constexpr,
+    OUT_DT: tl.constexpr,
+):
+    # load x, w, mean, rstd
+    pid = tl.program_id(0)
+    mu = tl.load(mu_ptr + pid)
+    rstd = tl.load(rstd_ptr + pid)
+    print(rstd)
+
+
 def calculate_settings(n):
     # reference: https://github.com/unslothai/unsloth/blob/fd753fed99ed5f10ef8a9b7139588d9de9ddecfb/unsloth/kernels/utils.py#L43
 
@@ -99,3 +120,8 @@ class CustomLayerNorm(torch.autograd.Function):
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.eps = eps
         return y
+
+    @staticmethod
+    def backward(ctx, dLdy):
+        x, w, b, m, v = ctx.saved_tensors
+        return None, None, None, None
