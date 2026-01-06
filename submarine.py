@@ -45,7 +45,7 @@ class Kernel(enum.Enum):
     TCH = "torch"
     TCH_CMP = "torch_compile"
     LIGER = "liger"
-    CUSTOM = "custom"
+    # CUSTOM = "custom"
 
     @classmethod
     def line_vals(cls) -> list[str]:
@@ -136,8 +136,8 @@ def handle_fwd(provider, q, x, norm_shape, weight, bias):
     match Kernel(provider):
         case Kernel.TCH:
             f = lambda: F.layer_norm(x, norm_shape, weight=weight, bias=bias)
-        case Kernel.CUSTOM:
-            f = lambda: CustomLayerNorm.apply(x, norm_shape, weight, bias)
+        # case Kernel.CUSTOM:
+        #    f = lambda: CustomLayerNorm.apply(x, norm_shape, weight, bias)
         case Kernel.TCH_CMP:
             f = torch.compile(
                 lambda: F.layer_norm(x, norm_shape, weight=weight, bias=bias),
@@ -165,9 +165,9 @@ def handle_bwd(provider, q, x, norm_shape, weight, bias, dLdy):
         case Kernel.TCH:
             ref = F.layer_norm(x, norm_shape, weight=weight, bias=bias)
             f = lambda: ref.backward(dLdy, retain_graph=True)
-        case Kernel.CUSTOM:
-            ref = CustomLayerNorm.apply(x, norm_shape, weight, bias)
-            f = lambda: ref.backward(dLdy, retain_graph=True)
+        # case Kernel.CUSTOM:
+        #    ref = CustomLayerNorm.apply(x, norm_shape, weight, bias)
+        #    f = lambda: ref.backward(dLdy, retain_graph=True)
         case Kernel.TCH_CMP:
             ref = F.layer_norm(x, norm_shape, weight=weight, bias=bias)
             f = torch.compile(
