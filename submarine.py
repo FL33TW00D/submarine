@@ -154,6 +154,7 @@ def handle_fwd(provider, q, x, norm_shape, weight, bias):
     ms, min_ms, max_ms = do_bench(
         f,
         quantiles=q,
+        rep=500,
     )
     return ms, min_ms, max_ms
 
@@ -182,10 +183,7 @@ def handle_bwd(provider, q, x, norm_shape, weight, bias, dLdy):
             ref = ln(x)
             f = lambda: ref.backward(dLdy, retain_graph=True)
 
-    ms, min_ms, max_ms = do_bench(
-        f,
-        quantiles=q,
-    )
+    ms, min_ms, max_ms = do_bench(f, quantiles=q, rep=500)
     return ms, min_ms, max_ms
 
 
@@ -238,7 +236,7 @@ def bench(
     @triton.testing.perf_report(
         triton.testing.Benchmark(
             x_names=["N"],
-            x_vals=[(2**i) - 1 for i in range(8, 15)],
+            x_vals=[(2**i) for i in range(8, 15)],
             line_arg="provider",
             line_vals=Kernel.line_vals(),
             line_names=Kernel.line_names(),
