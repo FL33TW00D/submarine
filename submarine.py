@@ -188,21 +188,45 @@ def handle_bwd(provider, q, x, norm_shape, weight, bias, dLdy):
 
 
 @app.command
-def ncu():
+def ncu(
+    kernel: Kernel = Kernel.CUSTOM,
+    mode: Mode = Mode.FORWARD,
+    m: int = 2048,
+    n: int = 2048,
+    dtype: Dtype = Dtype.BFLOAT16,
+):
+    """Run NCU profiling for LayerNorm kernels."""
     torch.manual_seed(0)
-    M = 2048
-    N = 2048
-    torch_dtype = torch.bfloat16
+    torch_dtype = dtype.to_torch()
 
-    x = torch.rand((M, N), device=DEVICE, dtype=torch_dtype)
+    x = torch.rand((m, n), device=DEVICE, dtype=torch_dtype)
     norm_shape = (x.shape[-1],)
     weight = torch.rand(norm_shape, device=DEVICE, dtype=torch_dtype)
     bias = torch.rand(norm_shape, device=DEVICE, dtype=torch_dtype)
-    f = lambda: CustomLayerNorm.apply(x, norm_shape, weight, bias)
-    # ln = LigerLayerNorm(hidden_size=norm_shape, eps=1e-5)
-    # ln.weight = torch.nn.Parameter(weight)
-    # ln.bias = torch.nn.Parameter(bias)
-    # f = lambda: ln(x)
+
+    match kernel:
+        case Kernel.CUSTOM:
+            fwd = lambda: CustomLayerNorm.apply(x, norm_shape, weight, bias)
+        case Kernel.LIGER:
+            ln = LigerLayerNorm(hidden_size=norm_shape, eps=1e-5)
+            ln.weight = torch.nn.Parameter(weight)
+            ln.bias = torch.nn.Parameter(bias)
+            fwd = lambda: ln(x)
+        case _:
+            raise ValueError(f"ncu only supports 'custom' or 'liger', got {kernel.value}")
+
+    match mode:
+        case Mode.FORWARD:
+            f = fwd
+        case Mode.BACKWARD:
+            x.requires_grad_(True)
+            weight.requires_grad_(True)
+            bias.requires_grad_(True)
+            dy = 0.1 * torch.randn_like(x)
+            y = fwd()
+            f = lambda: y.backward(dy, retain_graph=True)
+
+    print(f"Profiling: kernel={kernel.value}, mode={mode.value}, shape=({m}, {n}), dtype={dtype.value}")
 
     for _ in range(3):
         f()
@@ -212,14 +236,13 @@ def ncu():
     f()
     torch.cuda.synchronize()
     torch.cuda.cudart().cudaProfilerStop()
-    pass
 
 
 @app.command
 def bench(
     mode: Mode,
     dtype: Dtype,
-    m: int = 2048,
+    m: int = 4096,
     save_path: str = ".",
     show_plots: bool = False,
 ):

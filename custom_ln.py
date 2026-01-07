@@ -93,9 +93,8 @@ def _layer_norm_bwd_fused(
     lrange = tl.arange(0, BLOCK_SIZE)
     mask = lrange < N
 
-    # handle dLdX
     x = tl.load(x_ptr + pid * N + lrange, mask, other=0.0)
-    w = tl.load(w_ptr + lrange, mask, other=0.0)
+    w = tl.load(w_ptr + lrange, mask)
     mu = tl.load(mu_ptr + pid)
     rstd = tl.load(rstd_ptr + pid)
     dy = tl.load(dLdy_ptr + pid * N + lrange, mask, other=0.0)
@@ -121,6 +120,7 @@ def _layer_norm_bwd_fused(
     dw_addrs = dw_ptr + lock_idx * N + lrange
     while tl.atomic_cas(lock_ptr + lock_idx, 0, 1) != 0:
         pass
+    # critical section
 
     partial_db += tl.load(db_addrs, mask, other=0.0)
     partial_dw += tl.load(dw_addrs, mask, other=0.0)
@@ -184,7 +184,6 @@ class CustomLayerNorm(torch.autograd.Function):
 
         # Each program handles next_power_of_2(M / num_sms) rows = GROUP_SIZE_M (e.g 2048 / 82 = 25 => 32)
         sm_count = torch.cuda.get_device_properties(x.device).multi_processor_count
-        # TODO: autotune
         GROUP_SIZE_M = triton.next_power_of_2(M // sm_count) * 4
 
         dw_partial = torch.zeros((GROUP_SIZE_M, N), dtype=torch.float32, device=w.device)

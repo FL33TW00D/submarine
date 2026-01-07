@@ -3,6 +3,7 @@ Simple custom layernorm to learn :)
 """
 
 import torch
+import torch.nn.functional as F
 import triton
 import triton.language as tl
 from custom_ln import CustomLayerNorm
@@ -27,7 +28,11 @@ def test_layer_norm(M, N, dtype, eps=1e-5, device=DEVICE):
     x.requires_grad_(True)
     # forward pass
     y_tri = CustomLayerNorm.apply(x, w_shape, weight, bias, eps)
-    y_ref = torch.nn.functional.layer_norm(x, w_shape, weight, bias, eps).to(dtype)
+    f = torch.compile(
+        lambda: F.layer_norm(x, w_shape, weight=weight, bias=bias),
+        mode="max-autotune-no-cudagraphs",
+    )
+    y_ref = f()
     # backward pass (triton)
     y_tri.backward(dy, retain_graph=True)
     dx_tri, dw_tri, db_tri = [_.grad.clone() for _ in [x, weight, bias]]
