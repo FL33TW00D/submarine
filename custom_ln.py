@@ -61,6 +61,18 @@ def _layer_norm_fwd_fused(
     tl.store(y_ptr + irange, x_norm.to(OUT_DT), local_mask)
 
 
+@triton.autotune(
+    configs=[
+        triton.Config({}, num_warps=4, num_stages=1),
+        triton.Config({}, num_warps=8, num_stages=1),
+        triton.Config({}, num_warps=16, num_stages=1),
+        triton.Config({}, num_warps=32, num_stages=1),
+        triton.Config({}, num_warps=4, num_stages=2),
+        triton.Config({}, num_warps=8, num_stages=2),
+        triton.Config({}, num_warps=16, num_stages=2),
+    ],
+    key=["GROUP_SIZE_M", "N", "BLOCK_SIZE"],
+)
 @triton.jit
 def _layer_norm_bwd_fused(
     dLdy_ptr,  # pointer to dLdy
@@ -81,21 +93,40 @@ def _layer_norm_bwd_fused(
     lrange = tl.arange(0, BLOCK_SIZE)
     mask = lrange < N
 
+    # handle dLdX
     x = tl.load(x_ptr + pid * N + lrange, mask, other=0.0)
     w = tl.load(w_ptr + lrange, mask, other=0.0)
-    mu = tl.load(mu_ptr + pid, mask, other=0.0)
-
+    mu = tl.load(mu_ptr + pid)
+    rstd = tl.load(rstd_ptr + pid)
     dy = tl.load(dLdy_ptr + pid * N + lrange, mask, other=0.0)
+    dnorm = w * dy
+
+    x_hat = (x - mu) * rstd  # norm
+    x_hat = tl.where(mask, x_hat, 0.0)
+    dnorm = tl.where(mask, dnorm, 0.0)
+
+    c1 = tl.sum(x_hat * dnorm, axis=0) / N
+    c2 = tl.sum(dnorm, axis=0) / N
+    dx = (dnorm - (x_hat * c1 + c2)) * rstd
+
+    tl.store(dx_ptr + pid * N + lrange, dx, mask)
+
+    # Handle partials
+    cast_dy = dy.to(tl.float32)
+    partial_db = cast_dy
+    partial_dw = cast_dy * x_hat
 
     lock_idx = pid % GROUP_SIZE_M
     db_addrs = db_ptr + lock_idx * N + lrange
-
-    partial_db = dy.to(tl.float32)  # cast for accum
+    dw_addrs = dw_ptr + lock_idx * N + lrange
     while tl.atomic_cas(lock_ptr + lock_idx, 0, 1) != 0:
         pass
 
-    partial_db += tl.load(db_addrs, mask, other=0.0, cache_modifier=".cg")
-    tl.store(db_addrs, partial_db, mask=mask, cache_modifier=".cg")
+    partial_db += tl.load(db_addrs, mask, other=0.0)
+    partial_dw += tl.load(dw_addrs, mask, other=0.0)
+
+    tl.store(db_addrs, partial_db, mask=mask)
+    tl.store(dw_addrs, partial_dw, mask=mask)
 
     tl.debug_barrier()  # all threads need to have completed their work before we can free the row
 
@@ -153,11 +184,12 @@ class CustomLayerNorm(torch.autograd.Function):
 
         # Each program handles next_power_of_2(M / num_sms) rows = GROUP_SIZE_M (e.g 2048 / 82 = 25 => 32)
         sm_count = torch.cuda.get_device_properties(x.device).multi_processor_count
-        GROUP_SIZE_M = triton.next_power_of_2(M // sm_count)
-        print(f"GROUP_SIZE_M: {GROUP_SIZE_M}")
+        # TODO: autotune
+        GROUP_SIZE_M = triton.next_power_of_2(M // sm_count) * 4
 
         dw_partial = torch.zeros((GROUP_SIZE_M, N), dtype=torch.float32, device=w.device)
         db_partial = torch.zeros((GROUP_SIZE_M, N), dtype=torch.float32, device=w.device)
+        # Triton says it allows 16 bit types for atomic_xchg but no luck, we want bool fool!
         db_locks = torch.zeros((GROUP_SIZE_M,), dtype=torch.int32, device=w.device)
 
         _layer_norm_bwd_fused[(M,)](
@@ -177,5 +209,6 @@ class CustomLayerNorm(torch.autograd.Function):
         )
 
         db = db_partial.sum(dim=0)
+        dw = dw_partial.sum(dim=0)
 
         return dLdx, None, dw, db, None
