@@ -70,17 +70,37 @@ def _layer_norm_bwd_fused(
     rstd_ptr,  # pointer to cached rstd
     dx_ptr,  # pointer to output dX
     dw_ptr,  # pointer to output dW
-    db_partial_ptr,  # pointer to partial sums output for db. [GROUP_SIZE_M, N]
+    db_ptr,  # pointer to partial sums output for db. [GROUP_SIZE_M, N]
+    lock_ptr,  # pointer to db&dw locks. [GROUP_SIZE_M,]
     N,  # number of columns in X
     GROUP_SIZE_M: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     OUT_DT: tl.constexpr,
 ):
     pid = tl.program_id(0)
-    group_start = pid * GROUP_SIZE_M * N
+    lock_idx = pid % GROUP_SIZE_M
+
+    lrange = tl.arange(0, BLOCK_SIZE)
+    mask = lrange < N
+    grange = pid * N + lrange
+    dy = tl.load(dLdy_ptr + grange, mask, other=0.0)
+
+    db_addrs = db_ptr + lock_idx * N + lrange
+
+    partial_db = dy.to(tl.float32)
+    cur_lock_ptr = lock_ptr + lock_idx
+    while tl.atomic_cas(cur_lock_ptr, 0, 1) != 0:
+        pass
+
+    partial_db += tl.load(db_addrs, mask, other=0.0, cache_modifier=".cg")
+    tl.store(db_addrs, partial_db, mask=mask, cache_modifier=".cg")
+
+    tl.debug_barrier()  # all threads need to have completed their work before we can free the row
+
+    tl.atomic_xchg(cur_lock_ptr, 0)
 
 
-def calculate_settings(n):
+def calculate_settings(n: int) -> int:
     # reference: https://github.com/unslothai/unsloth/blob/fd753fed99ed5f10ef8a9b7139588d9de9ddecfb/unsloth/kernels/utils.py#L43
 
     MAX_FUSED_SIZE = 65536
@@ -130,12 +150,12 @@ class CustomLayerNorm(torch.autograd.Function):
         BLOCK_SIZE = calculate_settings(N)
 
         # Each program handles next_power_of_2(M / num_sms) rows = GROUP_SIZE_M (e.g 2048 / 82 = 25 => 32)
-        # So we create 32, 2048, which stores the partial sums, which then get reduced in a second kernel
-        # This means that each independent program touches each partial buffer row once, reduces contention.
         sm_count = torch.cuda.get_device_properties(x.device).multi_processor_count
-        GROUP_SIZE_M = triton.next_power_of_2(N // sm_count)
+        GROUP_SIZE_M = triton.next_power_of_2(M // sm_count)
+        print(f"GROUP_SIZE_M: {GROUP_SIZE_M}")
 
-        db_partial = torch.zeros((GROUP_SIZE_M, N), dtype=x.dtype, device=w.device)
+        db_partial = torch.zeros((GROUP_SIZE_M, N), dtype=torch.float32, device=w.device)
+        db_locks = torch.zeros((GROUP_SIZE_M,), dtype=torch.int32, device=w.device)
 
         _layer_norm_bwd_fused[(M,)](
             dLdy,
@@ -146,9 +166,13 @@ class CustomLayerNorm(torch.autograd.Function):
             dLdx,
             dw,
             db_partial,
+            db_locks,
             N,
+            GROUP_SIZE_M,
             BLOCK_SIZE,
             OUT_DT=tch_to_trt[x.dtype],
         )
+
+        db = db_partial.sum(dim=0)
 
         return dLdx, None, dw, db, None
