@@ -64,13 +64,13 @@ def _layer_norm_fwd_fused(
 @triton.jit
 def _layer_norm_bwd_fused(
     dLdy_ptr,  # pointer to dLdy
-    x_ptr,  # pointer to input
-    w_ptr,  # pointer to weight
-    mu_ptr,  # pointer to cached mu
-    rstd_ptr,  # pointer to cached rstd
-    dx_ptr,  # pointer to output dX
-    dw_ptr,  # pointer to output dW
-    db_ptr,  # pointer to partial sums output for db. [GROUP_SIZE_M, N]
+    x_ptr,  # pointer to input [M, N]
+    w_ptr,  # pointer to weight [N,]
+    mu_ptr,  # pointer to cached mu [M,]
+    rstd_ptr,  # pointer to cached rstd [M,]
+    dx_ptr,  # output pointer to output dX
+    dw_ptr,  # output pointer to partial sums output for dw. [GROUP_SIZE_M, N]
+    db_ptr,  # output pointer to partial sums output for db. [GROUP_SIZE_M, N]
     lock_ptr,  # pointer to db&dw locks. [GROUP_SIZE_M,]
     N,  # number of columns in X
     GROUP_SIZE_M: tl.constexpr,
@@ -78,18 +78,20 @@ def _layer_norm_bwd_fused(
     OUT_DT: tl.constexpr,
 ):
     pid = tl.program_id(0)
-    lock_idx = pid % GROUP_SIZE_M
-
     lrange = tl.arange(0, BLOCK_SIZE)
     mask = lrange < N
-    grange = pid * N + lrange
-    dy = tl.load(dLdy_ptr + grange, mask, other=0.0)
 
+    x = tl.load(x_ptr + pid * N + lrange, mask, other=0.0)
+    w = tl.load(w_ptr + lrange, mask, other=0.0)
+    mu = tl.load(mu_ptr + pid, mask, other=0.0)
+
+    dy = tl.load(dLdy_ptr + pid * N + lrange, mask, other=0.0)
+
+    lock_idx = pid % GROUP_SIZE_M
     db_addrs = db_ptr + lock_idx * N + lrange
 
-    partial_db = dy.to(tl.float32)
-    cur_lock_ptr = lock_ptr + lock_idx
-    while tl.atomic_cas(cur_lock_ptr, 0, 1) != 0:
+    partial_db = dy.to(tl.float32)  # cast for accum
+    while tl.atomic_cas(lock_ptr + lock_idx, 0, 1) != 0:
         pass
 
     partial_db += tl.load(db_addrs, mask, other=0.0, cache_modifier=".cg")
@@ -97,7 +99,7 @@ def _layer_norm_bwd_fused(
 
     tl.debug_barrier()  # all threads need to have completed their work before we can free the row
 
-    tl.atomic_xchg(cur_lock_ptr, 0)
+    tl.atomic_xchg(lock_ptr + lock_idx, 0)
 
 
 def calculate_settings(n: int) -> int:
@@ -154,6 +156,7 @@ class CustomLayerNorm(torch.autograd.Function):
         GROUP_SIZE_M = triton.next_power_of_2(M // sm_count)
         print(f"GROUP_SIZE_M: {GROUP_SIZE_M}")
 
+        dw_partial = torch.zeros((GROUP_SIZE_M, N), dtype=torch.float32, device=w.device)
         db_partial = torch.zeros((GROUP_SIZE_M, N), dtype=torch.float32, device=w.device)
         db_locks = torch.zeros((GROUP_SIZE_M,), dtype=torch.int32, device=w.device)
 
@@ -164,7 +167,7 @@ class CustomLayerNorm(torch.autograd.Function):
             mu,
             rstd,
             dLdx,
-            dw,
+            dw_partial,
             db_partial,
             db_locks,
             N,
