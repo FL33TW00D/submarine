@@ -255,11 +255,13 @@ def bench(
         show_plots: Whether to display plots interactively.
     """
     torch_dtype = dtype.to_torch()
+    xc = [(2**i) for i in range(8, 15)]
+    xc.insert(-1, 12288)
 
     @triton.testing.perf_report(
         triton.testing.Benchmark(
             x_names=["N"],
-            x_vals=[(2**i) for i in range(8, 15)],
+            x_vals=xc,
             line_arg="provider",
             line_vals=Kernel.line_vals(),
             line_names=Kernel.line_names(),
