@@ -94,7 +94,7 @@ def _layer_norm_bwd_fused(
     mask = lrange < N
 
     x = tl.load(x_ptr + pid * N + lrange, mask, other=0.0)
-    w = tl.load(w_ptr + lrange, mask)
+    w = tl.load(w_ptr + lrange, mask, other=0.0)
     mu = tl.load(mu_ptr + pid)
     rstd = tl.load(rstd_ptr + pid)
     dy = tl.load(dLdy_ptr + pid * N + lrange, mask, other=0.0)

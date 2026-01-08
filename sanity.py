@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 import triton
 import triton.language as tl
-from custom_ln import CustomLayerNorm
+from marine_ops.marine_ln import CustomLayerNorm
 
 tch_to_trt = {
     torch.float32: tl.float32,
