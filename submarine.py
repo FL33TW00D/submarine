@@ -1,4 +1,4 @@
-from custom_ln import CustomLayerNorm
+from marine_ops.marine_ln import MarineLayerNorm
 import enum
 
 import cyclopts
@@ -76,7 +76,7 @@ def validate(mode: Mode, max_examples: int = 100, seed: int | None = None):
         weight = torch.rand(norm_shape, device=DEVICE, dtype=dtype)
         bias = torch.rand(norm_shape, device=DEVICE, dtype=dtype)
 
-        y_custom = CustomLayerNorm.apply(x, norm_shape, weight, bias)
+        y_custom = MarineLayerNorm.apply(x, norm_shape, weight, bias)
         y_torch = F.layer_norm(x, norm_shape, weight, bias)
 
         assert torch.allclose(y_custom, y_torch, atol=TOLS[dtype], rtol=TOLS[dtype]), (
@@ -100,7 +100,7 @@ def validate(mode: Mode, max_examples: int = 100, seed: int | None = None):
         bias = torch.rand(norm_shape, device=DEVICE, dtype=dtype)
         dy = 0.1 * torch.randn_like(x)
 
-        y_custom = CustomLayerNorm.apply(x, norm_shape, weight, bias)
+        y_custom = MarineLayerNorm.apply(x, norm_shape, weight, bias)
         y_custom.backward(dy, retain_graph=True)
         dx_tri, dw_tri, db_tri = [_.grad.clone() for _ in [x, weight, bias]]
 
@@ -166,7 +166,7 @@ def handle_bwd(provider, q, x, norm_shape, weight, bias, dLdy):
             ref = F.layer_norm(x, norm_shape, weight=weight, bias=bias)
             f = lambda: ref.backward(dLdy, retain_graph=True)
         case Kernel.CUSTOM:
-            ref = CustomLayerNorm.apply(x, norm_shape, weight, bias)
+            ref = MarineLayerNorm.apply(x, norm_shape, weight, bias)
             f = lambda: ref.backward(dLdy, retain_graph=True)
         case Kernel.TCH_CMP:
             ref = F.layer_norm(x, norm_shape, weight=weight, bias=bias)
@@ -206,7 +206,7 @@ def ncu(
 
     match kernel:
         case Kernel.CUSTOM:
-            fwd = lambda: CustomLayerNorm.apply(x, norm_shape, weight, bias)
+            fwd = lambda: MarineLayerNorm.apply(x, norm_shape, weight, bias)
         case Kernel.LIGER:
             ln = LigerLayerNorm(hidden_size=norm_shape, eps=1e-5)
             ln.weight = torch.nn.Parameter(weight)

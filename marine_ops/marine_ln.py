@@ -61,18 +61,6 @@ def _layer_norm_fwd_fused(
     tl.store(y_ptr + irange, x_norm.to(OUT_DT), local_mask)
 
 
-@triton.autotune(
-    configs=[
-        triton.Config({}, num_warps=4, num_stages=1),
-        triton.Config({}, num_warps=8, num_stages=1),
-        triton.Config({}, num_warps=16, num_stages=1),
-        triton.Config({}, num_warps=32, num_stages=1),
-        triton.Config({}, num_warps=4, num_stages=2),
-        triton.Config({}, num_warps=8, num_stages=2),
-        triton.Config({}, num_warps=16, num_stages=2),
-    ],
-    key=["GROUP_SIZE_M", "N", "BLOCK_SIZE"],
-)
 @triton.jit
 def _layer_norm_bwd_fused(
     dLdy_ptr,  # pointer to dLdy
@@ -145,7 +133,7 @@ def calculate_settings(n: int) -> int:
     return BLOCK_SIZE
 
 
-class CustomLayerNorm(torch.autograd.Function):
+class MarineLayerNorm(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, normalized_shape, weight, bias, eps=1e-5):
         y = torch.empty_like(x)

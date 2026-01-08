@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 import triton
 import triton.language as tl
-from marine_ops.marine_ln import CustomLayerNorm
+from marine_ops.marine_ln import MarineLayerNorm
 
 tch_to_trt = {
     torch.float32: tl.float32,
@@ -27,7 +27,7 @@ def test_layer_norm(M, N, dtype, eps=1e-5, device=DEVICE):
     dy = 0.1 * torch.randn_like(x)
     x.requires_grad_(True)
     # forward pass
-    y_tri = CustomLayerNorm.apply(x, w_shape, weight, bias, eps)
+    y_tri = MarineLayerNorm.apply(x, w_shape, weight, bias, eps)
     f = torch.compile(
         lambda: F.layer_norm(x, w_shape, weight=weight, bias=bias),
         mode="max-autotune-no-cudagraphs",
