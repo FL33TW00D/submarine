@@ -19,31 +19,57 @@ def _softmax_fwd_fused(
     OUT_DT: tl.constexpr,
 ):
     pid = tl.program_id(0)
-    # 3 "loops"
-    # 1. Compute x_max
-    # 2. Compute denom = tl.sum(exp(x - x_max))
-    # 3. Compute out = x / denom
-    # each program handles 1 row
-
     offs = tl.arange(0, BLOCK_SIZE)
     mask = offs < N
     row_start = pid * N
     x = tl.load(x_ptr + row_start + offs, mask, other=0.0)
     x_max = tl.max(x)  # scalar maximum for the row
-    # second loop, compute denom
+
     x_shift = x - x_max
     x_shift = tl.where(offs < N, x_shift, float("-inf"))
-
     x_exp = tl.exp(x_shift)
     denom = tl.sum(x_exp)
+
     y = x_exp / denom
     tl.store(y_ptr + row_start + offs, y, mask)
 
 
+"""
+Can be derived with quotient rule and some effort.
+See: https://eli.thegreenplace.net/2016/the-softmax-function-and-its-derivative/
+And: https://mmuratarat.github.io/2019-01-27/derivation-of-softmax-function
+
+def softmax_backward(dLdy, y):
+    dot = (dLdy * y).sum(dim=-1, keepdim=True)
+    
+    # Final gradient: sigma * (g - dot)
+    return y * (dLdy - dot)
+
+"""
+
+
 @triton.jit
-def _softmax_bwd_fused():
+def _softmax_bwd_fused(
+    dLdy_ptr,  # pointer to dLdy (upstream gradient) [M,N]
+    y_ptr,  # pointer to the output of softmax [M,N]
+    dLdx_ptr,  # pointer to the result of this backward [M,N]
+    N,
+    BLOCK_SIZE: tl.constexpr,
+    OUT_DT: tl.constexpr,
+):
     pid = tl.program_id(0)
-    pass
+    lrange = tl.arange(0, BLOCK_SIZE)
+    mask = lrange < N
+    row_offset = pid * N
+
+    dy = tl.load(dLdy_ptr + row_offset + lrange, mask, other=0.0)
+    y = tl.load(y_ptr + row_offset + lrange, mask, other=0.0)
+
+    prod = dy * y  # elementwise mul
+    red = tl.sum(prod, axis=0)
+
+    dLdx = y * (dy - red)
+    tl.store(dLdx_ptr + row_offset + lrange, dLdx, mask)
 
 
 def calculate_settings(n: int) -> int:
@@ -77,10 +103,19 @@ class MarineSoftmax(torch.autograd.Function):
             BLOCK_SIZE=BLOCK_SIZE,
             OUT_DT=tch_to_trt[x.dtype],
         )
-        ctx.save_for_backward(x, y)
+        ctx.save_for_backward(y)
         ctx.BLOCK_SIZE = BLOCK_SIZE
         return y
 
     @staticmethod
     def backward(ctx, dLdy: torch.Tensor):
-        pass
+        (y,) = ctx.saved_tensors
+        y = y.reshape(-1, y.shape[-1])
+        M, N = y.shape
+
+        dLdx = torch.empty_like(dLdy)
+        BLOCK_SIZE = calculate_settings(N)
+
+        _softmax_bwd_fused[(M,)](dLdy, y, dLdx, N, BLOCK_SIZE, OUT_DT=tch_to_trt[y.dtype])
+
+        return dLdx

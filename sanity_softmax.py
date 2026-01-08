@@ -30,5 +30,19 @@ def test_softmax(M, N, dtype, device=DEVICE):
     print("Torch forward: ", y_ref)
     assert torch.allclose(y_tri, y_ref, atol=1e-3, rtol=0)
 
+    y_tri.backward(dy, retain_graph=True)
+    dx_tri = x.grad.clone()
+    x.grad = None
+    # backward pass (torch)
+    y_ref.backward(dy, retain_graph=True)
+    dx_ref = x.grad.clone()
+
+    print("DX Ground: ", dx_ref)
+    print("DX Triton: ", dx_tri)
+
+    # compare
+    assert torch.allclose(y_tri, y_ref, atol=1e-4, rtol=0)
+    assert torch.allclose(dx_tri, dx_ref, atol=1e-4, rtol=0)
+
 
 test_softmax(2048, 2048, torch.bfloat16)

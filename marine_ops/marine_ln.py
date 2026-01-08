@@ -80,12 +80,13 @@ def _layer_norm_bwd_fused(
     pid = tl.program_id(0)
     lrange = tl.arange(0, BLOCK_SIZE)
     mask = lrange < N
+    row_offset = pid * N
 
-    x = tl.load(x_ptr + pid * N + lrange, mask, other=0.0)
+    x = tl.load(x_ptr + row_offset + lrange, mask, other=0.0)
     w = tl.load(w_ptr + lrange, mask, other=0.0)
     mu = tl.load(mu_ptr + pid)
     rstd = tl.load(rstd_ptr + pid)
-    dy = tl.load(dLdy_ptr + pid * N + lrange, mask, other=0.0)
+    dy = tl.load(dLdy_ptr + row_offset + lrange, mask, other=0.0)
     dnorm = w * dy
 
     x_hat = (x - mu) * rstd  # norm
@@ -96,7 +97,7 @@ def _layer_norm_bwd_fused(
     c2 = tl.sum(dnorm, axis=0) / N
     dx = (dnorm - (x_hat * c1 + c2)) * rstd
 
-    tl.store(dx_ptr + pid * N + lrange, dx, mask)
+    tl.store(dx_ptr + row_offset + lrange, dx, mask)
 
     # Handle partials
     cast_dy = dy.to(tl.float32)
