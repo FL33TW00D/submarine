@@ -23,13 +23,16 @@ def _softmax_fwd_fused(
     mask = offs < N
     row_start = pid * N
     x = tl.load(x_ptr + row_start + offs, mask, other=0.0)
+    # One pass over data for max
     x_max = tl.max(x)  # scalar maximum for the row
 
     x_shift = x - x_max
     x_shift = tl.where(offs < N, x_shift, float("-inf"))
     x_exp = tl.exp(x_shift)
+    # One pass over data for denom
     denom = tl.sum(x_exp)
 
+    # One pass over data for division
     y = x_exp / denom
     tl.store(y_ptr + row_start + offs, y, mask)
 

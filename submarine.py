@@ -132,12 +132,12 @@ def validate(mode: Mode, max_examples: int = 100, seed: int | None = None):
     print("✓ All tests passed!")
 
 
-def handle_fwd(provider, q, x, norm_shape, weight, bias):
-    match Kernel(provider):
+def handle_fwd(kernel, q, x, norm_shape, weight, bias):
+    match Kernel(kernel):
         case Kernel.TCH:
             f = lambda: F.layer_norm(x, norm_shape, weight=weight, bias=bias)
-        # case Kernel.CUSTOM:
-        #    f = lambda: CustomLayerNorm.apply(x, norm_shape, weight, bias)
+        case Kernel.CUSTOM:
+            f = lambda: MarineLayerNorm.apply(x, norm_shape, weight, bias)
         case Kernel.TCH_CMP:
             f = torch.compile(
                 lambda: F.layer_norm(x, norm_shape, weight=weight, bias=bias),
@@ -159,9 +159,9 @@ def handle_fwd(provider, q, x, norm_shape, weight, bias):
     return ms, min_ms, max_ms
 
 
-def handle_bwd(provider, q, x, norm_shape, weight, bias, dLdy):
+def handle_bwd(kernel, q, x, norm_shape, weight, bias, dLdy):
     x.requires_grad_(True)
-    match Kernel(provider):
+    match Kernel(kernel):
         case Kernel.TCH:
             ref = F.layer_norm(x, norm_shape, weight=weight, bias=bias)
             f = lambda: ref.backward(dLdy, retain_graph=True)
