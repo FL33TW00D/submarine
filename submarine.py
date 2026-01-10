@@ -1,3 +1,4 @@
+from operations.softmax import SoftmaxOp
 from operations.layernorm import LayerNormOp
 import enum
 
@@ -19,6 +20,7 @@ tch_to_trt = {
 
 
 class OpList(enum.Enum):
+    SOFTMAX = "softmax"
     LAYERNORM = "layernorm"
 
 
@@ -53,7 +55,11 @@ def bench(
     xc = [(2**i) for i in range(8, 15)]
     xc.insert(-1, 12288)
 
-    operation = LayerNormOp()
+    match op:
+        case OpList.LAYERNORM:
+            operation = LayerNormOp()
+        case OpList.SOFTMAX:
+            operation = SoftmaxOp()
 
     @triton.testing.perf_report(
         triton.testing.Benchmark(

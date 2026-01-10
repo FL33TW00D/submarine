@@ -121,4 +121,4 @@ class MarineSoftmax(torch.autograd.Function):
 
         _softmax_bwd_fused[(M,)](dLdy, y, dLdx, N, BLOCK_SIZE, OUT_DT=tch_to_trt[y.dtype])
 
-        return dLdx
+        return dLdx, None
