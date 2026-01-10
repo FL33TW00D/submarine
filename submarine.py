@@ -19,7 +19,7 @@ tch_to_trt = {
 
 
 class OpList(enum.Enum):
-    LayerNorm = "layernorm"
+    LAYERNORM = "layernorm"
 
 
 class Mode(enum.Enum):
@@ -49,7 +49,6 @@ def bench(
     save_path: str = ".",
     show_plots: bool = False,
 ):
-    print("HELLO")
     torch_dtype = dtype.to_torch()
     xc = [(2**i) for i in range(8, 15)]
     xc.insert(-1, 12288)
@@ -71,7 +70,7 @@ def bench(
     )
     def benchmark_fn(M, N, provider, mode, torch_dtype):
         q = [0.5, 0.2, 0.8]
-        k = operation.kernel_cls()
+        k = operation.kernel_cls(provider)
 
         match Mode(mode):
             case Mode.FORWARD:
@@ -91,3 +90,7 @@ def bench(
 
     print(f"Running benchmark with dtype={dtype.value}, M={m}")
     benchmark_fn.run(print_data=True, save_path=save_path, show_plots=show_plots)
+
+
+if __name__ == "__main__":
+    app()

@@ -33,6 +33,10 @@ class LayerNormKernels(KernelEnum):
 
 
 class LayerNormOp(Operation[LayerNormKernels]):
+    @property
+    def kernel_cls(self) -> type[LayerNormKernels]:
+        return LayerNormKernels
+
     def yield_bwd(self, inputs: tuple[Any, ...], kernel: LayerNormKernels) -> Callable:
         (x, norm_shape, weight, bias, dLdy) = inputs
         match LayerNormKernels(kernel):
@@ -101,9 +105,9 @@ class LayerNormOp(Operation[LayerNormKernels]):
         return (x, norm_shape, weight, bias, dy)
 
     def fwd_gbps(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]:
-        (x, _) = inputs
+        (x, *_) = inputs
         return lambda ms: 2 * x.numel() * x.element_size() * 1e-9 / (ms * 1e-3)
 
     def bwd_gbps(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]:
-        (x, _) = inputs
+        (x, *_) = inputs
         return lambda ms: 3 * x.numel() * x.element_size() * 1e-9 / (ms * 1e-3)
