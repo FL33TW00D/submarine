@@ -5,12 +5,17 @@ We need to be able to benchmark all the variations
 
 """
 
+from typing import Callable, Any, Tuple
+
 from enum import Enum
-import torch.nn.functional as F
-from marine_ops.marine_ln import MarineLayerNorm
+
 import torch
+import torch.nn.functional as F
+from benchmark import Benchmark
 from liger_kernel.transformers import LigerLayerNorm
 from triton.testing import do_bench
+
+from marine_ops.marine_ln import MarineLayerNorm
 
 
 class KernelEnum(Enum):
@@ -38,25 +43,32 @@ class LayerNormKernels(KernelEnum):
         pass
 
 
-def handle_fwd(kernel, q, x, norm_shape, weight, bias):
-    match LayerNormKernels(kernel):
-        case LayerNormKernels.TCH:
-            f = lambda: F.layer_norm(x, norm_shape, weight=weight, bias=bias)
-        case LayerNormKernels.CUSTOM:
-            f = lambda: MarineLayerNorm.apply(x, norm_shape, weight, bias)
-        case LayerNormKernels.TCH_CMP:
-            f = torch.compile(
-                lambda: F.layer_norm(x, norm_shape, weight=weight, bias=bias),
-                mode="max-autotune-no-cudagraphs",
-            )
-            for _ in range(3):
-                f()  # warm up
-        case LayerNormKernels.LIGER:
-            ln = LigerLayerNorm(hidden_size=norm_shape, eps=1e-5)
-            ln.weight = torch.nn.Parameter(weight)
-            ln.bias = torch.nn.Parameter(bias)
-            f = lambda: ln(x)
+class LayerNormBenchmark(Benchmark[LayerNormKernels]):
+    def yield_fwd(self, inputs: Tuple[Any, ...], kernel: LayerNormKernels) -> Callable:
+        (x, norm_shape, weight, bias) = inputs
 
+        match LayerNormKernels(kernel):
+            case LayerNormKernels.TCH:
+                f = lambda: F.layer_norm(x, norm_shape, weight=weight, bias=bias)
+            case LayerNormKernels.CUSTOM:
+                f = lambda: MarineLayerNorm.apply(x, norm_shape, weight, bias)
+            case LayerNormKernels.TCH_CMP:
+                f = torch.compile(
+                    lambda: F.layer_norm(x, norm_shape, weight=weight, bias=bias),
+                    mode="max-autotune-no-cudagraphs",
+                )
+                for _ in range(3):
+                    f()  # warm up
+            case LayerNormKernels.LIGER:
+                ln = LigerLayerNorm(hidden_size=norm_shape, eps=1e-5)
+                ln.weight = torch.nn.Parameter(weight)
+                ln.bias = torch.nn.Parameter(bias)
+                f = lambda: ln(x)
+
+        return f
+
+
+def handle_fwd(kernel, q, x, norm_shape, weight, bias):
     ms, min_ms, max_ms = do_bench(
         f,
         quantiles=q,
