@@ -1,8 +1,19 @@
 from abc import ABC, abstractmethod
-from enum import Enum
-from typing import TypeVar, Generic, Callable, Any, Tuple, Optional
+from typing import Callable, Any, Tuple, Optional
+import enum
 
-K = TypeVar("K", bound=Enum)
+
+class KernelEnum(enum.Enum):
+    """Mixin that provides line_vals and line_names for any Enum."""
+
+    @classmethod
+    def line_vals(cls) -> list[str]:
+        return [k.value for k in cls]
+
+    @classmethod
+    def line_names(cls) -> list[str]:
+        return [k.value.title() for k in cls]
+
 
 """
 An operation generalizes kernels.
@@ -18,14 +29,14 @@ LayerNorm
 """
 
 
-class Operation(ABC, Generic[K]):
+class Operation(ABC):
     @property
     @abstractmethod
     def name(self) -> str: ...
 
     @property
     @abstractmethod
-    def kernel_cls(self) -> type[K]: ...
+    def kernels(self) -> type[KernelEnum]: ...
 
     @abstractmethod
     def generate_fwd_inputs(self, args: Any) -> Tuple[Any, ...]: ...
@@ -34,10 +45,10 @@ class Operation(ABC, Generic[K]):
     def generate_bwd_inputs(self, args: Any) -> Tuple[Any, ...]: ...
 
     @abstractmethod
-    def yield_fwd(self, inputs: Tuple[Any, ...], kernel: K) -> Callable: ...
+    def yield_fwd(self, inputs: Tuple[Any, ...], kernel: KernelEnum) -> Callable: ...
 
     @abstractmethod
-    def yield_bwd(self, inputs: Tuple[Any, ...], kernel: K) -> Callable: ...
+    def yield_bwd(self, inputs: Tuple[Any, ...], kernel: KernelEnum) -> Callable: ...
 
     @abstractmethod
     def fwd_gbps(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]: ...

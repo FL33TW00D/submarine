@@ -1,5 +1,5 @@
-from operations.operation import Operation
-from typing import Callable, Any, Tuple, Self, Optional
+from operations.operation import Operation, KernelEnum
+from typing import Callable, Any, Tuple, Optional
 
 from enum import Enum
 
@@ -13,18 +13,6 @@ DEVICE = triton.runtime.driver.active.get_active_torch_device()
 from marine_ops.marine_ln import MarineLayerNorm
 
 
-class KernelEnum(Enum):
-    """Mixin that provides line_vals and line_names for any Enum."""
-
-    @classmethod
-    def line_vals(cls) -> list[str]:
-        return [k.value for k in cls]
-
-    @classmethod
-    def line_names(cls) -> list[str]:
-        return [k.value.title() for k in cls]
-
-
 class LayerNormKernels(KernelEnum):
     TCH = "torch"
     TCH_CMP = "torch_compile"
@@ -32,18 +20,18 @@ class LayerNormKernels(KernelEnum):
     CUSTOM = "custom"
 
 
-class LayerNormOp(Operation[LayerNormKernels]):
+class LayerNormOp(Operation):
     @property
     def name(self) -> str:
         return "layernorm"
 
     @property
-    def kernel_cls(self) -> type[LayerNormKernels]:
+    def kernels(self) -> type[LayerNormKernels]:
         return LayerNormKernels
 
-    def yield_bwd(self, inputs: tuple[Any, ...], kernel: LayerNormKernels) -> Callable:
+    def yield_bwd(self, inputs: tuple[Any, ...], kernel: KernelEnum) -> Callable:
         (x, norm_shape, weight, bias, dLdy) = inputs
-        match LayerNormKernels(kernel):
+        match kernel:
             case LayerNormKernels.TCH:
                 ref = F.layer_norm(x, norm_shape, weight=weight, bias=bias)
                 f = lambda: ref.backward(dLdy, retain_graph=True)
@@ -66,10 +54,10 @@ class LayerNormOp(Operation[LayerNormKernels]):
                 f = lambda: ref.backward(dLdy, retain_graph=True)
         return f
 
-    def yield_fwd(self, inputs: Tuple[Any, ...], kernel: LayerNormKernels) -> Callable:
+    def yield_fwd(self, inputs: Tuple[Any, ...], kernel: KernelEnum) -> Callable:
         (x, norm_shape, weight, bias) = inputs
 
-        match LayerNormKernels(kernel):
+        match kernel:
             case LayerNormKernels.TCH:
                 f = lambda: F.layer_norm(x, norm_shape, weight=weight, bias=bias)
             case LayerNormKernels.CUSTOM:

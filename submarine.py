@@ -59,27 +59,26 @@ def bench(
         triton.testing.Benchmark(
             x_names=["N"],
             x_vals=xc,
-            line_arg="provider",
-            line_vals=operation.kernel_cls.line_vals(),
-            line_names=operation.kernel_cls.line_names(),
+            line_arg="kernel",
+            line_vals=operation.kernels.line_vals(),
+            line_names=operation.kernels.line_names(),
             styles=[("blue", "-"), ("green", "--"), ("red", "-"), ("pink", "--")],
             ylabel="GB/s",
             plot_name=f"{operation.name}-{mode.value}-{dtype.value}",
             args={"M": m, "mode": mode, "torch_dtype": torch_dtype},
         )
     )
-    def benchmark_fn(M, N, provider, mode, torch_dtype):
+    def benchmark_fn(M, N, kernel, mode, torch_dtype):
         q = [0.5, 0.2, 0.8]
-        k = operation.kernel_cls(provider)
 
         match Mode(mode):
             case Mode.FORWARD:
                 inputs = operation.generate_fwd_inputs((M, N, torch_dtype))
-                f = operation.yield_fwd(inputs, k)
+                f = operation.yield_fwd(inputs, operation.kernels(kernel))
                 gbps = operation.fwd_gbps(inputs)
             case Mode.BACKWARD:
                 inputs = operation.generate_bwd_inputs((M, N, torch_dtype))
-                f = operation.yield_bwd(inputs, k)
+                f = operation.yield_bwd(inputs, operation.kernels(kernel))
                 gbps = operation.bwd_gbps(inputs)
 
         ms, min_ms, max_ms = do_bench(f, quantiles=q, rep=500)
