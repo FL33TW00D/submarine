@@ -1,17 +1,10 @@
-"""
-What functionality do we need in here?
-
-We need to be able to benchmark all the variations
-
-"""
-
+from operations.operation import Operation
 from typing import Callable, Any, Tuple, Self, Optional
 
 from enum import Enum
 
 import torch
 import torch.nn.functional as F
-from benchmark import Benchmark
 from liger_kernel.transformers import LigerLayerNorm
 import triton
 
@@ -39,7 +32,7 @@ class LayerNormKernels(KernelEnum):
     CUSTOM = "custom"
 
 
-class LayerNormBenchmark(Benchmark[LayerNormKernels]):
+class LayerNormOp(Operation[LayerNormKernels]):
     def yield_bwd(self, inputs: tuple[Any, ...], kernel: LayerNormKernels) -> Callable:
         (x, norm_shape, weight, bias, dLdy) = inputs
         match LayerNormKernels(kernel):
@@ -78,7 +71,7 @@ class LayerNormBenchmark(Benchmark[LayerNormKernels]):
                     lambda: F.layer_norm(x, norm_shape, weight=weight, bias=bias),
                     mode="max-autotune-no-cudagraphs",
                 )
-                for _ in range(3):
+                for _ in range(5):
                     f()  # warm up
             case LayerNormKernels.LIGER:
                 ln = LigerLayerNorm(hidden_size=norm_shape, eps=1e-5)
