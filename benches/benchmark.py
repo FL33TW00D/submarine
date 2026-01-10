@@ -1,8 +1,7 @@
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import TypeVar, Generic, Callable, Any, Tuple
+from typing import TypeVar, Generic, Callable, Any, Tuple, Optional
 from dataclasses import dataclass
-import torch
 from triton.testing import do_bench
 
 
@@ -24,19 +23,41 @@ class Benchmark(ABC, Generic[K]):
     rep: int = 500
 
     @abstractmethod
-    def yield_fwd(self, inputs: tuple[Any, ...], kernel: K) -> Callable: ...
+    def yield_fwd(self, inputs: Tuple[Any, ...], kernel: K) -> Callable: ...
 
     @abstractmethod
-    def yield_bwd(self, inputs: tuple[Any, ...], kernel: K) -> Callable: ...
+    def yield_bwd(self, inputs: Tuple[Any, ...], kernel: K) -> Callable: ...
 
     @abstractmethod
-    def generate_fwd_inputs(self) -> Tuple[Any, ...]: ...
+    def generate_fwd_inputs(self, args: Any) -> Tuple[Any, ...]: ...
 
-    def bench_fwd(self, kernel: K) -> Tuple[int, int, int]:
-        inputs = self.generate_fwd_inputs()
-        f = self.yield_fwd(inputs, kernel)
+    @abstractmethod
+    def generate_bwd_inputs(self, args: Any) -> Tuple[Any, ...]: ...
+
+    @abstractmethod
+    def fwd_gbps(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]: ...
+
+    @abstractmethod
+    def bwd_gbps(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]: ...
+
+    def bench_fwd(self, args: Any, kernel: K) -> Tuple[float | int, float | int, float | int]:
+        inputs = self.generate_fwd_inputs(args)
         ms, min_ms, max_ms = do_bench(
-            f,
+            self.yield_fwd(inputs, kernel),
+            quantiles=self.quantiles,
+            rep=self.rep,
+        )
+
+        if self.fwd_gbps(inputs):
+            gbps = self.fwd_gbps(inputs)
+            return gbps(ms), gbps(min_ms), gbps(max_ms)  # ty:ignore[call-non-callable]
+        else:
+            return ms, min_ms, max_ms
+
+    def bench_bwd(self, args: Any, kernel: K) -> Tuple[int, int, int]:
+        inputs = self.generate_bwd_inputs(args)
+        ms, min_ms, max_ms = do_bench(
+            self.yield_bwd(inputs, kernel),
             quantiles=self.quantiles,
             rep=self.rep,
         )

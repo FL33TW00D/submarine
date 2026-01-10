@@ -52,6 +52,7 @@ def validate(operation, mode: Mode, max_examples: int = 100, seed: int | None = 
     print("✓ All tests passed!")
 
 
+"""
 @app.command
 def ncu(
     op: Operation,
@@ -61,8 +62,6 @@ def ncu(
     n: int = 2048,
     dtype: Dtype = Dtype.BFLOAT16,
 ):
-    """Run NCU profiling for an operation."""
-
     match kernel:
         case Kernel.CUSTOM:
             fwd = lambda: MarineLayerNorm.apply(x, norm_shape, weight, bias)
@@ -95,6 +94,7 @@ def ncu(
     f()
     torch.cuda.synchronize()
     torch.cuda.cudart().cudaProfilerStop()
+"""
 
 
 @app.command
@@ -121,7 +121,7 @@ def bench(
         line_arg="provider",
         line_vals=Kernel.line_vals(),
         line_names=Kernel.line_names(),
-        styles=[("blue", "-"), ("green", "--"), ("red", "-"), ("pink", "--")],
+        styles=[("blue", "-"), ("green", "--"), ("re", "-"), ("pink", "--")],
         ylabel="GB/s",
         plot_name=f"layernorm-{mode.value}-{dtype.value}",
         args={"M": m, "mode": mode, "torch_dtype": torch_dtype},

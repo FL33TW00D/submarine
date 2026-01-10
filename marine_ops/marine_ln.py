@@ -1,15 +1,8 @@
-"""
-Simple custom layernorm to learn :)
-"""
-
-from submarine import Dtype
-
 from typing import Optional, Self
 
 import torch
 import triton
 import triton.language as tl
-import enum
 import torch.nn.functional as F
 
 from hypothesis import given, settings, strategies as st
@@ -213,22 +206,6 @@ class MarineLayerNorm(torch.autograd.Function):
 
         return dLdx, None, dw, db, None
 
-    @classmethod
-    def fwd_inputs(cls: type[Self], M: int, N: int, dtype: Dtype):
-        torch.manual_seed(0)
-        torch_dtype = dtype.to_torch()
-
-        x = torch.rand((M, N), device=DEVICE, dtype=torch_dtype)
-        norm_shape = (x.shape[-1],)
-        weight = torch.rand(norm_shape, device=DEVICE, dtype=torch_dtype)
-        bias = torch.rand(norm_shape, device=DEVICE, dtype=torch_dtype)
-
-        return (x, norm_shape, weight, bias)
-
-    @classmethod
-    def bwd_inputs(cls: type[Self], M: int, N: int, dtype: Dtype):
-        (x, norm_shape, weight, bias) = cls.fwd_inputs(M, N, dtype)
-
     """
     Property testing for validating forward across a wide range of shapes
     """
@@ -236,15 +213,16 @@ class MarineLayerNorm(torch.autograd.Function):
     @classmethod
     def validate_fwd(cls: type[Self], max_examples: int = 100):
         @given(
-            m=st.integers(min_value=8, max_value=4096),
-            n=st.integers(min_value=8, max_value=4096),
+            M=st.integers(min_value=8, max_value=4096),
+            N=st.integers(min_value=8, max_value=4096),
             dtype=st.sampled_from([torch.float32, torch.float16, torch.bfloat16]),
             data_seed=st.integers(min_value=0, max_value=2**32 - 1),
         )
         @settings(max_examples=max_examples, deadline=None, database=None)
-        def _validate(m: int, n: int, dtype: torch.dtype, data_seed: int):
+        def _validate(M: int, N: int, dtype: torch.dtype, data_seed: int):
             torch.manual_seed(data_seed)
-            x = torch.rand((m, n), device=DEVICE, dtype=dtype)
+
+            x = torch.rand((M, N), device=DEVICE, dtype=dtype)
             norm_shape = (x.shape[-1],)
             weight = torch.rand(norm_shape, device=DEVICE, dtype=dtype)
             bias = torch.rand(norm_shape, device=DEVICE, dtype=dtype)
@@ -261,21 +239,24 @@ class MarineLayerNorm(torch.autograd.Function):
     @classmethod
     def validate_bwd(cls: type[Self], max_examples: int = 100):
         @given(
-            m=st.integers(min_value=8, max_value=4096),
-            n=st.integers(min_value=8, max_value=4096),
+            M=st.integers(min_value=8, max_value=4096),
+            N=st.integers(min_value=8, max_value=4096),
             dtype=st.sampled_from([torch.float32, torch.float16, torch.bfloat16]),
             data_seed=st.integers(min_value=0, max_value=2**32 - 1),
         )
         @settings(max_examples=max_examples, deadline=None, database=None)
-        def _validate(m: int, n: int, dtype: torch.dtype, data_seed: int):
+        def _validate(M: int, N: int, dtype: torch.dtype, data_seed: int):
             torch.manual_seed(data_seed)
 
-            x = torch.rand((m, n), device=DEVICE, dtype=dtype)
-            x.requires_grad = True
+            x = torch.rand((M, N), device=DEVICE, dtype=dtype)
             norm_shape = (x.shape[-1],)
             weight = torch.rand(norm_shape, device=DEVICE, dtype=dtype)
             bias = torch.rand(norm_shape, device=DEVICE, dtype=dtype)
             dy = 0.1 * torch.randn_like(x)
+
+            x.requires_grad_(True)
+            weight.requires_grad_(True)
+            bias.requires_grad_(True)
 
             y_custom = MarineLayerNorm.apply(x, norm_shape, weight, bias)
             y_custom.backward(dy, retain_graph=True)
