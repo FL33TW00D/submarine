@@ -2,7 +2,9 @@
 Simple custom layernorm to learn :)
 """
 
-from typing import Optional
+from submarine import Dtype
+
+from typing import Optional, Self
 
 import torch
 import triton
@@ -19,23 +21,6 @@ tch_to_trt = {
     torch.float16: tl.float16,
     torch.bfloat16: tl.bfloat16,
 }
-
-TOLS = {torch.float32: 1e-5, torch.float16: 1e-3, torch.bfloat16: 7e-2}
-
-
-class Kernel(enum.Enum):
-    TCH = "torch"
-    TCH_CMP = "torch_compile"
-    LIGER = "liger"
-    CUSTOM = "custom"
-
-    @classmethod
-    def line_vals(cls) -> list[str]:
-        return [k.value for k in cls]
-
-    @classmethod
-    def line_names(cls) -> list[str]:
-        return [k.value.title() for k in cls]
 
 
 @triton.autotune(
@@ -160,6 +145,8 @@ def calculate_settings(n: int) -> int:
 
 
 class MarineLayerNorm(torch.autograd.Function):
+    TOLS = {torch.float32: 1e-5, torch.float16: 1e-3, torch.bfloat16: 7e-2}
+
     @staticmethod
     def forward(ctx, x, normalized_shape, weight, bias, eps=1e-5):
         y = torch.empty_like(x)
@@ -226,11 +213,28 @@ class MarineLayerNorm(torch.autograd.Function):
 
         return dLdx, None, dw, db, None
 
+    @classmethod
+    def fwd_inputs(cls: type[Self], M: int, N: int, dtype: Dtype):
+        torch.manual_seed(0)
+        torch_dtype = dtype.to_torch()
+
+        x = torch.rand((M, N), device=DEVICE, dtype=torch_dtype)
+        norm_shape = (x.shape[-1],)
+        weight = torch.rand(norm_shape, device=DEVICE, dtype=torch_dtype)
+        bias = torch.rand(norm_shape, device=DEVICE, dtype=torch_dtype)
+
+        return (x, norm_shape, weight, bias)
+
+    @classmethod
+    def bwd_inputs(cls: type[Self], M: int, N: int, dtype: Dtype):
+        (x, norm_shape, weight, bias) = cls.fwd_inputs(M, N, dtype)
+
     """
     Property testing for validating forward across a wide range of shapes
     """
 
-    def validate_fwd(max_examples: int = 100):
+    @classmethod
+    def validate_fwd(cls: type[Self], max_examples: int = 100):
         @given(
             m=st.integers(min_value=8, max_value=4096),
             n=st.integers(min_value=8, max_value=4096),
@@ -248,13 +252,14 @@ class MarineLayerNorm(torch.autograd.Function):
             y_custom = MarineLayerNorm.apply(x, norm_shape, weight, bias)
             y_torch = F.layer_norm(x, norm_shape, weight, bias)
 
-            assert torch.allclose(y_custom, y_torch, atol=TOLS[dtype], rtol=TOLS[dtype]), (
+            assert torch.allclose(y_custom, y_torch, atol=cls.TOLS[dtype], rtol=cls.TOLS[dtype]), (
                 f"Mismatch for shape=({m}, {n}), dtype={dtype}\nMax abs diff: {(y_custom - y_torch).abs().max().item():.2e}"
             )
 
         _validate()
 
-    def validate_bwd(max_examples: int = 100):
+    @classmethod
+    def validate_bwd(cls: type[Self], max_examples: int = 100):
         @given(
             m=st.integers(min_value=8, max_value=4096),
             n=st.integers(min_value=8, max_value=4096),
@@ -280,13 +285,13 @@ class MarineLayerNorm(torch.autograd.Function):
             y_torch.backward(dy, retain_graph=True)
             dx_ref, dw_ref, db_ref = [_.grad.clone() for _ in [x, weight, bias]]
 
-            assert torch.allclose(dx_ref, dx_tri, atol=TOLS[dtype], rtol=TOLS[dtype]), (
+            assert torch.allclose(dx_ref, dx_tri, atol=cls.TOLS[dtype], rtol=cls.TOLS[dtype]), (
                 f"Mismatch for DX, shape=({m}, {n}), dtype={dtype}\nMax abs diff: {(dx_ref - dx_tri).abs().max().item():.2e}"
             )
-            assert torch.allclose(dw_ref, dw_tri, atol=TOLS[dtype], rtol=TOLS[dtype]), (
+            assert torch.allclose(dw_ref, dw_tri, atol=cls.TOLS[dtype], rtol=cls.TOLS[dtype]), (
                 f"Mismatch for DW, shape=({m}, {n}), dtype={dtype}\nMax abs diff: {(dx_ref - dx_tri).abs().max().item():.2e}"
             )
-            assert torch.allclose(db_ref, db_tri, atol=TOLS[dtype], rtol=TOLS[dtype]), (
+            assert torch.allclose(db_ref, db_tri, atol=cls.TOLS[dtype], rtol=cls.TOLS[dtype]), (
                 f"Mismatch for DB, shape=({m}, {n}), dtype={dtype}\nMax abs diff: {(dx_ref - dx_tri).abs().max().item():.2e}"
             )
 

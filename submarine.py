@@ -1,4 +1,3 @@
-from operation import Operation
 from marine_ops.marine_ln import MarineLayerNorm
 import enum
 
@@ -7,7 +6,6 @@ import torch
 import torch.nn.functional as F
 import triton
 import triton.language as tl
-from liger_kernel.transformers import LigerLayerNorm
 from hypothesis import given, settings, strategies as st
 from triton.testing import do_bench
 
@@ -41,7 +39,7 @@ class Dtype(enum.Enum):
 
 
 @app.command
-def validate(operation: Operation, mode: Mode, max_examples: int = 100, seed: int | None = None):
+def validate(operation, mode: Mode, max_examples: int = 100, seed: int | None = None):
     """
     Use property based testing to validate operation against pytorch
     """
@@ -54,77 +52,16 @@ def validate(operation: Operation, mode: Mode, max_examples: int = 100, seed: in
     print("✓ All tests passed!")
 
 
-def handle_fwd(kernel, q, x, norm_shape, weight, bias):
-    match Kernel(kernel):
-        case Kernel.TCH:
-            f = lambda: F.layer_norm(x, norm_shape, weight=weight, bias=bias)
-        case Kernel.CUSTOM:
-            f = lambda: MarineLayerNorm.apply(x, norm_shape, weight, bias)
-        case Kernel.TCH_CMP:
-            f = torch.compile(
-                lambda: F.layer_norm(x, norm_shape, weight=weight, bias=bias),
-                mode="max-autotune-no-cudagraphs",
-            )
-            for _ in range(3):
-                f()  # warm up
-        case Kernel.LIGER:
-            ln = LigerLayerNorm(hidden_size=norm_shape, eps=1e-5)
-            ln.weight = torch.nn.Parameter(weight)
-            ln.bias = torch.nn.Parameter(bias)
-            f = lambda: ln(x)
-
-    ms, min_ms, max_ms = do_bench(
-        f,
-        quantiles=q,
-        rep=500,
-    )
-    return ms, min_ms, max_ms
-
-
-def handle_bwd(kernel, q, x, norm_shape, weight, bias, dLdy):
-    x.requires_grad_(True)
-    match Kernel(kernel):
-        case Kernel.TCH:
-            ref = F.layer_norm(x, norm_shape, weight=weight, bias=bias)
-            f = lambda: ref.backward(dLdy, retain_graph=True)
-        case Kernel.CUSTOM:
-            ref = MarineLayerNorm.apply(x, norm_shape, weight, bias)
-            f = lambda: ref.backward(dLdy, retain_graph=True)
-        case Kernel.TCH_CMP:
-            ref = F.layer_norm(x, norm_shape, weight=weight, bias=bias)
-            f = torch.compile(
-                lambda: ref.backward(dLdy, retain_graph=True),
-                mode="max-autotune-no-cudagraphs",
-            )
-            for _ in range(3):
-                f()  # warm up
-        case Kernel.LIGER:
-            ln = LigerLayerNorm(hidden_size=norm_shape, eps=1e-5)
-            ln.weight = torch.nn.Parameter(weight)
-            ln.bias = torch.nn.Parameter(bias)
-            ref = ln(x)
-            f = lambda: ref.backward(dLdy, retain_graph=True)
-
-    ms, min_ms, max_ms = do_bench(f, quantiles=q, rep=500)
-    return ms, min_ms, max_ms
-
-
 @app.command
 def ncu(
+    op: Operation,
     kernel: Kernel = Kernel.CUSTOM,
     mode: Mode = Mode.FORWARD,
     m: int = 2048,
     n: int = 2048,
     dtype: Dtype = Dtype.BFLOAT16,
 ):
-    """Run NCU profiling for LayerNorm kernels."""
-    torch.manual_seed(0)
-    torch_dtype = dtype.to_torch()
-
-    x = torch.rand((m, n), device=DEVICE, dtype=torch_dtype)
-    norm_shape = (x.shape[-1],)
-    weight = torch.rand(norm_shape, device=DEVICE, dtype=torch_dtype)
-    bias = torch.rand(norm_shape, device=DEVICE, dtype=torch_dtype)
+    """Run NCU profiling for an operation."""
 
     match kernel:
         case Kernel.CUSTOM:
