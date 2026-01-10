@@ -2,15 +2,40 @@
 Simple custom layernorm to learn :)
 """
 
+from typing import Optional
+
 import torch
 import triton
 import triton.language as tl
+import enum
+import torch.nn.functional as F
+
+from hypothesis import given, settings, strategies as st
+
+DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 tch_to_trt = {
     torch.float32: tl.float32,
     torch.float16: tl.float16,
     torch.bfloat16: tl.bfloat16,
 }
+
+TOLS = {torch.float32: 1e-5, torch.float16: 1e-3, torch.bfloat16: 7e-2}
+
+
+class Kernel(enum.Enum):
+    TCH = "torch"
+    TCH_CMP = "torch_compile"
+    LIGER = "liger"
+    CUSTOM = "custom"
+
+    @classmethod
+    def line_vals(cls) -> list[str]:
+        return [k.value for k in cls]
+
+    @classmethod
+    def line_names(cls) -> list[str]:
+        return [k.value.title() for k in cls]
 
 
 @triton.autotune(
@@ -200,3 +225,69 @@ class MarineLayerNorm(torch.autograd.Function):
         dw = dw_partial.sum(dim=0)
 
         return dLdx, None, dw, db, None
+
+    """
+    Property testing for validating forward across a wide range of shapes
+    """
+
+    def validate_fwd(max_examples: int = 100):
+        @given(
+            m=st.integers(min_value=8, max_value=4096),
+            n=st.integers(min_value=8, max_value=4096),
+            dtype=st.sampled_from([torch.float32, torch.float16, torch.bfloat16]),
+            data_seed=st.integers(min_value=0, max_value=2**32 - 1),
+        )
+        @settings(max_examples=max_examples, deadline=None, database=None)
+        def _validate(m: int, n: int, dtype: torch.dtype, data_seed: int):
+            torch.manual_seed(data_seed)
+            x = torch.rand((m, n), device=DEVICE, dtype=dtype)
+            norm_shape = (x.shape[-1],)
+            weight = torch.rand(norm_shape, device=DEVICE, dtype=dtype)
+            bias = torch.rand(norm_shape, device=DEVICE, dtype=dtype)
+
+            y_custom = MarineLayerNorm.apply(x, norm_shape, weight, bias)
+            y_torch = F.layer_norm(x, norm_shape, weight, bias)
+
+            assert torch.allclose(y_custom, y_torch, atol=TOLS[dtype], rtol=TOLS[dtype]), (
+                f"Mismatch for shape=({m}, {n}), dtype={dtype}\nMax abs diff: {(y_custom - y_torch).abs().max().item():.2e}"
+            )
+
+        _validate()
+
+    def validate_bwd(max_examples: int = 100):
+        @given(
+            m=st.integers(min_value=8, max_value=4096),
+            n=st.integers(min_value=8, max_value=4096),
+            dtype=st.sampled_from([torch.float32, torch.float16, torch.bfloat16]),
+            data_seed=st.integers(min_value=0, max_value=2**32 - 1),
+        )
+        @settings(max_examples=max_examples, deadline=None, database=None)
+        def _validate(m: int, n: int, dtype: torch.dtype, data_seed: int):
+            torch.manual_seed(data_seed)
+
+            x = torch.rand((m, n), device=DEVICE, dtype=dtype)
+            x.requires_grad = True
+            norm_shape = (x.shape[-1],)
+            weight = torch.rand(norm_shape, device=DEVICE, dtype=dtype)
+            bias = torch.rand(norm_shape, device=DEVICE, dtype=dtype)
+            dy = 0.1 * torch.randn_like(x)
+
+            y_custom = MarineLayerNorm.apply(x, norm_shape, weight, bias)
+            y_custom.backward(dy, retain_graph=True)
+            dx_tri, dw_tri, db_tri = [_.grad.clone() for _ in [x, weight, bias]]
+
+            y_torch = F.layer_norm(x, norm_shape, weight, bias)
+            y_torch.backward(dy, retain_graph=True)
+            dx_ref, dw_ref, db_ref = [_.grad.clone() for _ in [x, weight, bias]]
+
+            assert torch.allclose(dx_ref, dx_tri, atol=TOLS[dtype], rtol=TOLS[dtype]), (
+                f"Mismatch for DX, shape=({m}, {n}), dtype={dtype}\nMax abs diff: {(dx_ref - dx_tri).abs().max().item():.2e}"
+            )
+            assert torch.allclose(dw_ref, dw_tri, atol=TOLS[dtype], rtol=TOLS[dtype]), (
+                f"Mismatch for DW, shape=({m}, {n}), dtype={dtype}\nMax abs diff: {(dx_ref - dx_tri).abs().max().item():.2e}"
+            )
+            assert torch.allclose(db_ref, db_tri, atol=TOLS[dtype], rtol=TOLS[dtype]), (
+                f"Mismatch for DB, shape=({m}, {n}), dtype={dtype}\nMax abs diff: {(dx_ref - dx_tri).abs().max().item():.2e}"
+            )
+
+        _validate()

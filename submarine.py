@@ -1,3 +1,4 @@
+from operation import Operation
 from marine_ops.marine_ln import MarineLayerNorm
 import enum
 
@@ -20,8 +21,6 @@ tch_to_trt = {
     torch.bfloat16: tl.bfloat16,
 }
 
-TOLS = {torch.float32: 1e-5, torch.float16: 1e-3, torch.bfloat16: 7e-2}
-
 
 class Mode(enum.Enum):
     FORWARD = "forward"
@@ -41,94 +40,17 @@ class Dtype(enum.Enum):
         }[self]
 
 
-class Kernel(enum.Enum):
-    TCH = "torch"
-    TCH_CMP = "torch_compile"
-    LIGER = "liger"
-    CUSTOM = "custom"
-
-    @classmethod
-    def line_vals(cls) -> list[str]:
-        return [k.value for k in cls]
-
-    @classmethod
-    def line_names(cls) -> list[str]:
-        return [k.value.title() for k in cls]
-
-
 @app.command
-def validate(mode: Mode, max_examples: int = 100, seed: int | None = None):
+def validate(operation: Operation, mode: Mode, max_examples: int = 100, seed: int | None = None):
     """
-    Use property based testing to validate custom layernorm against pytorch
+    Use property based testing to validate operation against pytorch
     """
-
-    @given(
-        m=st.integers(min_value=8, max_value=4096),
-        n=st.integers(min_value=8, max_value=4096),
-        dtype=st.sampled_from([torch.float32, torch.float16, torch.bfloat16]),
-        data_seed=st.integers(min_value=0, max_value=2**32 - 1),
-    )
-    @settings(max_examples=max_examples, deadline=None, database=None)
-    def check_ln_fwd(m: int, n: int, dtype: torch.dtype, data_seed: int):
-        torch.manual_seed(data_seed)
-        x = torch.rand((m, n), device=DEVICE, dtype=dtype)
-        norm_shape = (x.shape[-1],)
-        weight = torch.rand(norm_shape, device=DEVICE, dtype=dtype)
-        bias = torch.rand(norm_shape, device=DEVICE, dtype=dtype)
-
-        y_custom = MarineLayerNorm.apply(x, norm_shape, weight, bias)
-        y_torch = F.layer_norm(x, norm_shape, weight, bias)
-
-        assert torch.allclose(y_custom, y_torch, atol=TOLS[dtype], rtol=TOLS[dtype]), (
-            f"Mismatch for shape=({m}, {n}), dtype={dtype}\nMax abs diff: {(y_custom - y_torch).abs().max().item():.2e}"
-        )
-
-    @given(
-        m=st.integers(min_value=8, max_value=4096),
-        n=st.integers(min_value=8, max_value=4096),
-        dtype=st.sampled_from([torch.float32, torch.float16, torch.bfloat16]),
-        data_seed=st.integers(min_value=0, max_value=2**32 - 1),
-    )
-    @settings(max_examples=max_examples, deadline=None, database=None)
-    def check_ln_bwd(m: int, n: int, dtype: torch.dtype, data_seed: int):
-        torch.manual_seed(data_seed)
-
-        x = torch.rand((m, n), device=DEVICE, dtype=dtype)
-        x.requires_grad = True
-        norm_shape = (x.shape[-1],)
-        weight = torch.rand(norm_shape, device=DEVICE, dtype=dtype)
-        bias = torch.rand(norm_shape, device=DEVICE, dtype=dtype)
-        dy = 0.1 * torch.randn_like(x)
-
-        y_custom = MarineLayerNorm.apply(x, norm_shape, weight, bias)
-        y_custom.backward(dy, retain_graph=True)
-        dx_tri, dw_tri, db_tri = [_.grad.clone() for _ in [x, weight, bias]]
-
-        y_torch = F.layer_norm(x, norm_shape, weight, bias)
-        y_torch.backward(dy, retain_graph=True)
-        dx_ref, dw_ref, db_ref = [_.grad.clone() for _ in [x, weight, bias]]
-
-        assert torch.allclose(dx_ref, dx_tri, atol=TOLS[dtype], rtol=TOLS[dtype]), (
-            f"Mismatch for DX, shape=({m}, {n}), dtype={dtype}\nMax abs diff: {(dx_ref - dx_tri).abs().max().item():.2e}"
-        )
-        assert torch.allclose(dw_ref, dw_tri, atol=TOLS[dtype], rtol=TOLS[dtype]), (
-            f"Mismatch for DW, shape=({m}, {n}), dtype={dtype}\nMax abs diff: {(dx_ref - dx_tri).abs().max().item():.2e}"
-        )
-        assert torch.allclose(db_ref, db_tri, atol=TOLS[dtype], rtol=TOLS[dtype]), (
-            f"Mismatch for DB, shape=({m}, {n}), dtype={dtype}\nMax abs diff: {(dx_ref - dx_tri).abs().max().item():.2e}"
-        )
-
     print(f"Running {max_examples} property-based tests...")
     if seed is not None:
         import random
 
         random.seed(seed)
 
-    match Mode(mode):
-        case Mode.FORWARD:
-            check_ln_fwd()
-        case Mode.BACKWARD:
-            check_ln_bwd()
     print("✓ All tests passed!")
 
 
@@ -255,22 +177,20 @@ def bench(
         show_plots: Whether to display plots interactively.
     """
     torch_dtype = dtype.to_torch()
-    xc = [(2**i) for i in range(8, 15)]
-    xc.insert(-1, 12288)
 
-    @triton.testing.perf_report(
-        triton.testing.Benchmark(
-            x_names=["N"],
-            x_vals=xc,
-            line_arg="provider",
-            line_vals=Kernel.line_vals(),
-            line_names=Kernel.line_names(),
-            styles=[("blue", "-"), ("green", "--"), ("red", "-"), ("pink", "--")],
-            ylabel="GB/s",
-            plot_name=f"layernorm-{mode.value}-{dtype.value}",
-            args={"M": m, "mode": mode, "torch_dtype": torch_dtype},
-        )
+    benchmark = triton.testing.Benchmark(
+        x_names=["N"],
+        x_vals=xc,
+        line_arg="provider",
+        line_vals=Kernel.line_vals(),
+        line_names=Kernel.line_names(),
+        styles=[("blue", "-"), ("green", "--"), ("red", "-"), ("pink", "--")],
+        ylabel="GB/s",
+        plot_name=f"layernorm-{mode.value}-{dtype.value}",
+        args={"M": m, "mode": mode, "torch_dtype": torch_dtype},
     )
+
+    @triton.testing.perf_report(benchmark)
     def benchmark_fn(M, N, provider, mode, torch_dtype):
         x = torch.rand((M, N), device=DEVICE, dtype=torch_dtype)
         q = [0.5, 0.2, 0.8]
@@ -292,6 +212,25 @@ def bench(
 
     print(f"Running benchmark with dtype={dtype.value}, M={m}")
     benchmark_fn.run(print_data=True, save_path=save_path, show_plots=show_plots)
+
+
+def create_benchmark(M: int, operation: Operation, kernel: Kernel, mode: Mode, dtype):
+    styles = [("blue", "-"), ("green", "--"), ("red", "-"), ("pink", "--"), ("orange", "-")]
+
+    xc = [(2**i) for i in range(8, 15)]
+    xc.insert(-1, 12288)
+
+    benchmark = triton.testing.Benchmark(
+        x_names=["N"],
+        x_vals=xc,
+        line_arg="provider",
+        line_vals=Kernel.line_vals(),
+        line_names=Kernel.line_names(),
+        styles=[("blue", "-"), ("green", "--"), ("red", "-"), ("pink", "--")],
+        ylabel="GB/s",
+        plot_name=f"{operation.name}-{mode.value}-{dtype.value}",
+        args={"M": M, "mode": mode, "torch_dtype": dtype.value},
+    )
 
 
 if __name__ == "__main__":
