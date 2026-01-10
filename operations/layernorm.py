@@ -34,6 +34,10 @@ class LayerNormKernels(KernelEnum):
 
 class LayerNormOp(Operation[LayerNormKernels]):
     @property
+    def name(self) -> str:
+        return "layernorm"
+
+    @property
     def kernel_cls(self) -> type[LayerNormKernels]:
         return LayerNormKernels
 

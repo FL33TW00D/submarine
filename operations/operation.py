@@ -21,6 +21,10 @@ LayerNorm
 class Operation(ABC, Generic[K]):
     @property
     @abstractmethod
+    def name(self) -> str: ...
+
+    @property
+    @abstractmethod
     def kernel_cls(self) -> type[K]: ...
 
     @abstractmethod

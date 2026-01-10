@@ -64,7 +64,7 @@ def bench(
             line_names=operation.kernel_cls.line_names(),
             styles=[("blue", "-"), ("green", "--"), ("red", "-"), ("pink", "--")],
             ylabel="GB/s",
-            plot_name=f"layernorm-{mode.value}-{dtype.value}",
+            plot_name=f"{operation.name}-{mode.value}-{dtype.value}",
             args={"M": m, "mode": mode, "torch_dtype": torch_dtype},
         )
     )
