@@ -38,12 +38,6 @@ class LayerNormKernels(KernelEnum):
     LIGER = "liger"
     CUSTOM = "custom"
 
-    def gbps_fwd():
-        pass
-
-    def gbps_bwd():
-        pass
-
 
 class LayerNormBenchmark(Benchmark[LayerNormKernels]):
     def yield_bwd(self, inputs: tuple[Any, ...], kernel: LayerNormKernels) -> Callable:
@@ -116,3 +110,7 @@ class LayerNormBenchmark(Benchmark[LayerNormKernels]):
     def fwd_gbps(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]:
         (x, _) = inputs
         return lambda ms: 2 * x.numel() * x.element_size() * 1e-9 / (ms * 1e-3)
+
+    def bwd_gbps(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]:
+        (x, _) = inputs
+        return lambda ms: 3 * x.numel() * x.element_size() * 1e-9 / (ms * 1e-3)

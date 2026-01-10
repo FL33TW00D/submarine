@@ -11,9 +11,6 @@ class BenchResult:
     min_ms: float
     max_ms: float
 
-    def gbps(self, num_bytes: int) -> float:
-        return num_bytes / (self.ms * 1e-3) / 1e9
-
 
 K = TypeVar("K", bound=Enum)
 
@@ -40,7 +37,7 @@ class Benchmark(ABC, Generic[K]):
     @abstractmethod
     def bwd_gbps(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]: ...
 
-    def bench_fwd(self, args: Any, kernel: K) -> Tuple[float | int, float | int, float | int]:
+    def bench_fwd(self, args: Any, kernel: K) -> BenchResult:
         inputs = self.generate_fwd_inputs(args)
         ms, min_ms, max_ms = do_bench(
             self.yield_fwd(inputs, kernel),
@@ -50,15 +47,20 @@ class Benchmark(ABC, Generic[K]):
 
         if self.fwd_gbps(inputs):
             gbps = self.fwd_gbps(inputs)
-            return gbps(ms), gbps(min_ms), gbps(max_ms)  # ty:ignore[call-non-callable]
-        else:
-            return ms, min_ms, max_ms
 
-    def bench_bwd(self, args: Any, kernel: K) -> Tuple[int, int, int]:
+            return BenchResult(gbps(ms), gbps(min_ms), gbps(max_ms))  # ty:ignore[call-non-callable]
+        else:
+            return BenchResult(ms, min_ms, max_ms)
+
+    def bench_bwd(self, args: Any, kernel: K) -> BenchResult:
         inputs = self.generate_bwd_inputs(args)
         ms, min_ms, max_ms = do_bench(
             self.yield_bwd(inputs, kernel),
             quantiles=self.quantiles,
             rep=self.rep,
         )
-        return ms, min_ms, max_ms
+        if self.bwd_gbps(inputs):
+            gbps = self.bwd_gbps(inputs)
+            return BenchResult(gbps(ms), gbps(min_ms), gbps(max_ms))  # ty:ignore[call-non-callable]
+        else:
+            return BenchResult(ms, min_ms, max_ms)

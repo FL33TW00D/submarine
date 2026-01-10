@@ -151,7 +151,7 @@ def bench(
     benchmark_fn.run(print_data=True, save_path=save_path, show_plots=show_plots)
 
 
-def create_benchmark(M: int, operation: Operation, kernel: Kernel, mode: Mode, dtype):
+def create_benchmark(M: int, kernel: Kernel, mode: Mode, dtype):
     styles = [("blue", "-"), ("green", "--"), ("red", "-"), ("pink", "--"), ("orange", "-")]
 
     xc = [(2**i) for i in range(8, 15)]
