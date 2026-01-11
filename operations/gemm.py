@@ -81,3 +81,17 @@ class GEMMOp(Operation):
         B.requires_grad_(True)
         dLdc = 0.1 * torch.randn((M, K), dtype=dtype, device=DEVICE)
         return (A, B, dLdc)
+
+    def fwd_metric(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]:
+        # TFLOPS
+        (A, B, *_) = inputs
+
+        M = A.shape[-2]
+        N = B.shape[-1]
+        K = B.shape[-2]
+
+        flops = 2 * M * N * K
+        return lambda ms: flops / (ms * 1e-3) / 1e12
+
+    def bwd_metric(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]:
+        return None

@@ -54,10 +54,8 @@ class Operation(ABC):
     @abstractmethod
     def yield_bwd(self, inputs: Tuple[Any, ...], kernel: KernelEnum) -> Callable: ...
 
-    def fwd_gbps(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]:
-        # Compute bound ops don't need this!
+    def fwd_metric(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]:
         return None
 
-    def bwd_gbps(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]:
-        # Compute bound ops don't need this!
+    def bwd_metric(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]:
         return None

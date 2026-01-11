@@ -66,7 +66,7 @@ def bench(
         case OpList.GEMM:
             operation = GEMMOp()
 
-    y_label = "GB/s" if operation.memory_bound else "ms"
+    y_label = "GB/s" if operation.memory_bound else "TLFOP/s"
 
     @triton.testing.perf_report(
         triton.testing.Benchmark(
@@ -88,17 +88,14 @@ def bench(
             case Mode.FORWARD:
                 inputs = operation.generate_fwd_inputs((M, N, torch_dtype))
                 f = operation.yield_fwd(inputs, operation.kernels(kernel))
-                gbps_f = operation.fwd_gbps(inputs)
+                metric_f = operation.fwd_metric(inputs)
             case Mode.BACKWARD:
                 inputs = operation.generate_bwd_inputs((M, N, torch_dtype))
                 f = operation.yield_bwd(inputs, operation.kernels(kernel))
-                gbps_f = operation.bwd_gbps(inputs)
+                metric_f = operation.bwd_metric(inputs)
 
         ms, min_ms, max_ms = do_bench(f, quantiles=q, rep=500)
-        if gbps_f:
-            return gbps_f(ms), gbps_f(max_ms), gbps_f(min_ms)
-        else:
-            return ms, min_ms, max_ms
+        return metric_f(ms), metric_f(min_ms), metric_f(max_ms)
 
     print(f"Running benchmark with dtype={dtype.value}, M={m}")
     benchmark_fn.run(print_data=True, save_path=save_path, show_plots=show_plots)
@@ -109,8 +106,8 @@ def ncu(
     op: OpList,
     kernel: str,
     mode: Mode = Mode.FORWARD,
-    m: int = 2048,
-    n: int = 2048,
+    m: int = 4096,
+    n: int = 8192,
     dtype: Dtype = Dtype.BFLOAT16,
 ):
     """Run NCU profiling for kernel operations."""
@@ -126,7 +123,6 @@ def ncu(
             operation = GEMMOp()
 
     kernel_enum = operation.kernels(kernel)
-    print(kernel_enum)
 
     match mode:
         case Mode.FORWARD:

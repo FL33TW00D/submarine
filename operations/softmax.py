@@ -86,10 +86,10 @@ class SoftmaxOp(Operation):
         dy = 0.1 * torch.randn_like(x)
         return (x, dy)
 
-    def fwd_gbps(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]:
+    def fwd_metric(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]:
         (x, *_) = inputs
         return lambda ms: 2 * x.numel() * x.element_size() * 1e-9 / (ms * 1e-3)
 
-    def bwd_gbps(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]:
+    def bwd_metric(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]:
         (x, *_) = inputs
         return lambda ms: 3 * x.numel() * x.element_size() * 1e-9 / (ms * 1e-3)

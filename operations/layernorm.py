@@ -99,10 +99,12 @@ class LayerNormOp(Operation):
         dy = 0.1 * torch.randn_like(x)
         return (x, norm_shape, weight, bias, dy)
 
-    def fwd_gbps(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]:
+    def fwd_metric(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]:
+        # GBPS
         (x, *_) = inputs
         return lambda ms: 2 * x.numel() * x.element_size() * 1e-9 / (ms * 1e-3)
 
-    def bwd_gbps(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]:
+    def bwd_metric(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]:
+        # GBPS
         (x, *_) = inputs
         return lambda ms: 3 * x.numel() * x.element_size() * 1e-9 / (ms * 1e-3)
