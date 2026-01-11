@@ -92,7 +92,7 @@ class MarineGEMM(torch.autograd.Function):
         # TODO: dtype handling
         C = torch.empty(output_shape, dtype=A.dtype, device=A.device)
 
-        BLOCK_SIZE_M = 64
+        BLOCK_SIZE_M = 128
         BLOCK_SIZE_N = 64
         BLOCK_SIZE_K = 64
 

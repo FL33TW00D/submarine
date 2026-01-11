@@ -21,6 +21,10 @@ class GEMMOp(Operation):
         return "gemm"
 
     @property
+    def memory_bound(self) -> bool:
+        return False
+
+    @property
     def kernels(self) -> type[GEMMKernels]:
         return GEMMKernels
 

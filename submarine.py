@@ -52,6 +52,7 @@ def bench(
     m: int = 4096,
     save_path: str = ".",
     show_plots: bool = False,
+    dump_ptx: bool = False,
 ):
     torch_dtype = dtype.to_torch()
     xc = [(2**i) for i in range(8, 15)]
@@ -65,6 +66,8 @@ def bench(
         case OpList.GEMM:
             operation = GEMMOp()
 
+    y_label = "GB/s" if operation.memory_bound else "ms"
+
     @triton.testing.perf_report(
         triton.testing.Benchmark(
             x_names=["N"],
@@ -73,7 +76,7 @@ def bench(
             line_vals=operation.kernels.line_vals(),
             line_names=operation.kernels.line_names(),
             styles=[("blue", "-"), ("green", "--"), ("red", "-"), ("pink", "--")],
-            ylabel="GB/s",
+            ylabel=y_label,
             plot_name=f"{operation.name}-{mode.value}-{dtype.value}",
             args={"M": m, "mode": mode, "torch_dtype": torch_dtype},
         )
@@ -85,15 +88,15 @@ def bench(
             case Mode.FORWARD:
                 inputs = operation.generate_fwd_inputs((M, N, torch_dtype))
                 f = operation.yield_fwd(inputs, operation.kernels(kernel))
-                gbps = operation.fwd_gbps(inputs)
+                gbps_f = operation.fwd_gbps(inputs)
             case Mode.BACKWARD:
                 inputs = operation.generate_bwd_inputs((M, N, torch_dtype))
                 f = operation.yield_bwd(inputs, operation.kernels(kernel))
-                gbps = operation.bwd_gbps(inputs)
+                gbps_f = operation.bwd_gbps(inputs)
 
         ms, min_ms, max_ms = do_bench(f, quantiles=q, rep=500)
-        if gbps:
-            return gbps(ms), gbps(max_ms), gbps(min_ms)
+        if gbps_f:
+            return gbps_f(ms), gbps_f(max_ms), gbps_f(min_ms)
         else:
             return ms, min_ms, max_ms
 

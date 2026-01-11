@@ -36,6 +36,10 @@ class Operation(ABC):
 
     @property
     @abstractmethod
+    def memory_bound(self) -> bool: ...
+
+    @property
+    @abstractmethod
     def kernels(self) -> type[KernelEnum]: ...
 
     @abstractmethod

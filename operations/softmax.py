@@ -23,6 +23,10 @@ class SoftmaxOp(Operation):
         return "softmax"
 
     @property
+    def memory_bound(self) -> bool:
+        return True
+
+    @property
     def kernels(self) -> type[SoftmaxKernels]:
         return SoftmaxKernels
 

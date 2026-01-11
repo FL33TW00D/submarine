@@ -25,6 +25,10 @@ class LayerNormOp(Operation):
         return "layernorm"
 
     @property
+    def memory_bound(self) -> bool:
+        return True
+
+    @property
     def kernels(self) -> type[LayerNormKernels]:
         return LayerNormKernels
 
