@@ -1,3 +1,4 @@
+from operations.gemm import GEMMOp
 from operations.softmax import SoftmaxOp
 from operations.layernorm import LayerNormOp
 import enum
@@ -22,6 +23,7 @@ tch_to_trt = {
 class OpList(enum.Enum):
     SOFTMAX = "softmax"
     LAYERNORM = "layernorm"
+    GEMM = "gemm"
 
 
 class Mode(enum.Enum):
@@ -60,6 +62,8 @@ def bench(
             operation = LayerNormOp()
         case OpList.SOFTMAX:
             operation = SoftmaxOp()
+        case OpList.GEMM:
+            operation = GEMMOp()
 
     @triton.testing.perf_report(
         triton.testing.Benchmark(

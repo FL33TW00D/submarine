@@ -39,10 +39,10 @@ class Operation(ABC):
     def kernels(self) -> type[KernelEnum]: ...
 
     @abstractmethod
-    def generate_fwd_io(self, args: Any) -> Tuple[Any, ...]: ...
+    def generate_fwd_inputs(self, args: Any) -> Tuple[Any, ...]: ...
 
     @abstractmethod
-    def generate_bwd_io(self, args: Any) -> Tuple[Any, ...]: ...
+    def generate_bwd_inputs(self, args: Any) -> Tuple[Any, ...]: ...
 
     @abstractmethod
     def yield_fwd(self, inputs: Tuple[Any, ...], kernel: KernelEnum) -> Callable: ...
@@ -50,12 +50,10 @@ class Operation(ABC):
     @abstractmethod
     def yield_bwd(self, inputs: Tuple[Any, ...], kernel: KernelEnum) -> Callable: ...
 
-    @abstractmethod
     def fwd_gbps(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]:
         # Compute bound ops don't need this!
         return None
 
-    @abstractmethod
     def bwd_gbps(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]:
         # Compute bound ops don't need this!
         return None

@@ -4,7 +4,7 @@ from typing import Callable, Any, Tuple, Optional
 import torch
 import torch.nn.functional as F
 from liger_kernel.transformers import LigerSoftmax
-from marine_ops.marine_softmax import MarineSoftmax
+from marine_ops.softmax import MarineSoftmax
 import triton
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()

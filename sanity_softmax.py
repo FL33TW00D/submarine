@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 import triton
 import triton.language as tl
-from marine_ops.marine_softmax import MarineSoftmax
+from marine_ops.softmax import MarineSoftmax
 
 tch_to_trt = {
     torch.float32: tl.float32,

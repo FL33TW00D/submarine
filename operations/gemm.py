@@ -3,8 +3,7 @@ from typing import Callable, Any, Tuple, Optional
 
 import torch
 import torch.nn.functional as F
-from liger_kernel.transformers import LigerGEMM
-from marine_ops.marine_gemm import MarineGEMM
+from marine_ops.gemm import MarineGEMM
 import triton
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
@@ -29,13 +28,13 @@ class GEMMOp(Operation):
         (a, b, dLdc) = inputs
         match kernel:
             case GEMMKernels.TCH:
-                ref = torch.bmm(a, b)
+                ref = torch.matmul(a, b)
                 f = lambda: ref.backward(dLdc, retain_graph=True)
             case GEMMKernels.CUSTOM:
                 ref = MarineGEMM.apply(a, b)
                 f = lambda: ref.backward(dLdc, retain_graph=True)
             case GEMMKernels.TCH_CMP:
-                ref = torch.bmm(a, b)
+                ref = torch.matmul(a, b)
                 f = torch.compile(
                     lambda: ref.backward(dLdc, retain_graph=True),
                     mode="max-autotune-no-cudagraphs",
@@ -49,12 +48,12 @@ class GEMMOp(Operation):
 
         match kernel:
             case GEMMKernels.TCH:
-                f = lambda: torch.bmm(a, b)
+                f = lambda: torch.matmul(a, b)
             case GEMMKernels.CUSTOM:
                 f = lambda: MarineGEMM.apply(a, b)
             case GEMMKernels.TCH_CMP:
                 f = torch.compile(
-                    lambda: torch.bmm(a, b),
+                    lambda: torch.matmul(a, b),
                     mode="max-autotune-no-cudagraphs",
                 )
                 for _ in range(5):
@@ -63,10 +62,10 @@ class GEMMOp(Operation):
         return f
 
     def generate_fwd_inputs(self, args: Any):
-        (M, N, K, dtype) = args
+        (M, N, dtype) = args
         torch.manual_seed(0)
-        A = torch.randn((M, K), dtype=dtype, device=DEVICE)
-        B = torch.randn((K, N), dtype=dtype, device=DEVICE)
+        A = torch.randn((M, 1024), dtype=dtype, device=DEVICE)
+        B = torch.randn((1024, N), dtype=dtype, device=DEVICE)
         return (A, B)
 
     def generate_bwd_inputs(self, args: Any):

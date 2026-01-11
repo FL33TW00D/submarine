@@ -1,4 +1,5 @@
 from operations.operation import Operation, KernelEnum
+from marine_ops.layernorm import MarineLayerNorm
 from typing import Callable, Any, Tuple, Optional
 
 from enum import Enum
@@ -9,8 +10,6 @@ from liger_kernel.transformers import LigerLayerNorm
 import triton
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
-
-from marine_ops.marine_ln import MarineLayerNorm
 
 
 class LayerNormKernels(KernelEnum):
