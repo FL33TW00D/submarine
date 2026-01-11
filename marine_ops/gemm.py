@@ -58,7 +58,7 @@ def _gemm_bwd():
     pass
 
 
-def calculate_block_size(M: int, N: int) -> Tuple[int, int]:
+def calculate_block_size(M: int, N: int) -> Tuple[int, int, int]:
     # Wave quantization is the root of all evil, and this is a function of the number of SMs and our dispatch
     # We need enough warps to be assigned to each SM to latency hide
     # So, query the number of SMs
@@ -74,7 +74,7 @@ def calculate_block_size(M: int, N: int) -> Tuple[int, int]:
     # So if we had 32x32 tiles, minimum matrix size is sqrt(2624*(32*32)) ~ 1600x1600
     # 32 warps per SM
 
-    return (128, 128)
+    return (64, 64, 64)
 
 
 class MarineGEMM(torch.autograd.Function):
@@ -92,9 +92,7 @@ class MarineGEMM(torch.autograd.Function):
         # TODO: dtype handling
         C = torch.empty(output_shape, dtype=A.dtype, device=A.device)
 
-        BLOCK_SIZE_M = 128
-        BLOCK_SIZE_N = 64
-        BLOCK_SIZE_K = 64
+        (BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K) = calculate_block_size(M, N)
 
         MD = math.ceil(M / BLOCK_SIZE_M)
         ND = math.ceil(N / BLOCK_SIZE_N)

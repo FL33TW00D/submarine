@@ -104,5 +104,49 @@ def bench(
     benchmark_fn.run(print_data=True, save_path=save_path, show_plots=show_plots)
 
 
+@app.command
+def ncu(
+    op: OpList,
+    kernel: str,
+    mode: Mode = Mode.FORWARD,
+    m: int = 2048,
+    n: int = 2048,
+    dtype: Dtype = Dtype.BFLOAT16,
+):
+    """Run NCU profiling for kernel operations."""
+    torch.manual_seed(0)
+    torch_dtype = dtype.to_torch()
+
+    match op:
+        case OpList.LAYERNORM:
+            operation = LayerNormOp()
+        case OpList.SOFTMAX:
+            operation = SoftmaxOp()
+        case OpList.GEMM:
+            operation = GEMMOp()
+
+    kernel_enum = operation.kernels(kernel)
+    print(kernel_enum)
+
+    match mode:
+        case Mode.FORWARD:
+            inputs = operation.generate_fwd_inputs((m, n, torch_dtype))
+            f = operation.yield_fwd(inputs, kernel_enum)
+        case Mode.BACKWARD:
+            inputs = operation.generate_bwd_inputs((m, n, torch_dtype))
+            f = operation.yield_bwd(inputs, kernel_enum)
+
+    print(f"Profiling: op={op.value}, kernel={kernel}, mode={mode.value}, shape=({m}, {n}), dtype={dtype.value}")
+
+    for _ in range(3):
+        f()
+    torch.cuda.synchronize()
+
+    torch.cuda.cudart().cudaProfilerStart()
+    f()
+    torch.cuda.synchronize()
+    torch.cuda.cudart().cudaProfilerStop()
+
+
 if __name__ == "__main__":
     app()
