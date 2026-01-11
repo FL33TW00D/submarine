@@ -32,4 +32,4 @@ def test_gemm(M, N, dtype, device=DEVICE):
     assert torch.allclose(y_tri, y_ref, atol=1e-4, rtol=0)
 
 
-test_gemm(2048, 2048, torch.bfloat16)
+test_gemm(4096, 8192, torch.bfloat16)

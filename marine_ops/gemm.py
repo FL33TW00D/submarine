@@ -28,6 +28,10 @@ def _gemm_fwd(
     pid_m = tl.program_id(0)
     pid_n = tl.program_id(1)
 
+    num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
+    num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
+    pid_m, pid_n = tl.swizzle2d(pid_m, pid_n, num_pid_m, num_pid_n, 8)
+
     offs_m = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
     offs_n = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
 
@@ -74,7 +78,7 @@ def calculate_block_size(M: int, N: int) -> Tuple[int, int, int]:
     # So if we had 32x32 tiles, minimum matrix size is sqrt(2624*(32*32)) ~ 1600x1600
     # 32 warps per SM
 
-    return (64, 64, 64)
+    return (64, 256, 32)
 
 
 class MarineGEMM(torch.autograd.Function):
