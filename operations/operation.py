@@ -36,6 +36,10 @@ class Operation(ABC):
 
     @property
     @abstractmethod
+    def memory_bound(self) -> bool: ...
+
+    @property
+    @abstractmethod
     def kernels(self) -> type[KernelEnum]: ...
 
     @abstractmethod
@@ -50,8 +54,8 @@ class Operation(ABC):
     @abstractmethod
     def yield_bwd(self, inputs: Tuple[Any, ...], kernel: KernelEnum) -> Callable: ...
 
-    @abstractmethod
-    def fwd_gbps(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]: ...
+    def fwd_metric(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]:
+        return None
 
-    @abstractmethod
-    def bwd_gbps(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]: ...
+    def bwd_metric(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]:
+        return None

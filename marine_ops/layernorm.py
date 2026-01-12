@@ -176,7 +176,6 @@ class MarineLayerNorm(torch.autograd.Function):
         dLdx = torch.empty_like(dLdy)
         BLOCK_SIZE = calculate_settings(N)
 
-        # Each program handles next_power_of_2(M / num_sms) rows = GROUP_SIZE_M (e.g 2048 / 82 = 25 => 32)
         sm_count = torch.cuda.get_device_properties(x.device).multi_processor_count
         GROUP_SIZE_M = triton.next_power_of_2(M // sm_count) * 4
 
