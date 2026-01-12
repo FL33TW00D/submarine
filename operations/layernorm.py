@@ -1,4 +1,5 @@
 from operations.operation import Operation, KernelEnum
+from marine_ops.layernorm import MarineLayerNorm
 from typing import Callable, Any, Tuple, Optional
 
 from enum import Enum
@@ -9,8 +10,6 @@ from liger_kernel.transformers import LigerLayerNorm
 import triton
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
-
-from marine_ops.marine_ln import MarineLayerNorm
 
 
 class LayerNormKernels(KernelEnum):
@@ -24,6 +23,10 @@ class LayerNormOp(Operation):
     @property
     def name(self) -> str:
         return "layernorm"
+
+    @property
+    def memory_bound(self) -> bool:
+        return True
 
     @property
     def kernels(self) -> type[LayerNormKernels]:
@@ -96,10 +99,12 @@ class LayerNormOp(Operation):
         dy = 0.1 * torch.randn_like(x)
         return (x, norm_shape, weight, bias, dy)
 
-    def fwd_gbps(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]:
+    def fwd_metric(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]:
+        # GBPS
         (x, *_) = inputs
         return lambda ms: 2 * x.numel() * x.element_size() * 1e-9 / (ms * 1e-3)
 
-    def bwd_gbps(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]:
+    def bwd_metric(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]:
+        # GBPS
         (x, *_) = inputs
         return lambda ms: 3 * x.numel() * x.element_size() * 1e-9 / (ms * 1e-3)
