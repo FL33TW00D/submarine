@@ -10,6 +10,7 @@ dependencies = [
     "liger-kernel-nightly>=0.6.4.dev20260102122147",
     "matplotlib>=3.10.8",
     "numpy>=2.4.0",
+    "nvidia-cutlass-dsl>=4.3.5",
     "pandas>=2.3.3",
     "torch>=2.9.1",
     "triton>=3.5.1",
