@@ -23,10 +23,6 @@ class SoftmaxOp(Operation):
         return "softmax"
 
     @property
-    def memory_bound(self) -> bool:
-        return True
-
-    @property
     def kernels(self) -> type[SoftmaxKernels]:
         return SoftmaxKernels
 
@@ -93,3 +89,27 @@ class SoftmaxOp(Operation):
     def bwd_metric(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]:
         (x, *_) = inputs
         return lambda ms: 3 * x.numel() * x.element_size() * 1e-9 / (ms * 1e-3)
+
+    def get_benchmark(self, mode: Any, dtype: Any, **kwargs) -> triton.testing.Benchmark:
+        import triton.testing
+
+        m = 4096
+        xc = [(2**i) for i in range(8, 15)]
+        xc.insert(-1, 12288)
+
+        y_label = "GB/s"
+
+        return triton.testing.Benchmark(
+            x_names=["N"],
+            x_vals=xc,
+            line_arg="kernel",
+            line_vals=self.kernels.line_vals(),
+            line_names=self.kernels.line_names(),
+            styles=[("blue", "-"), ("green", "--"), ("red", "-"), ("pink", "--")],
+            ylabel=y_label,
+            plot_name=f"{self.name}-{mode.value}-{dtype.value}",
+            args={"M": m, "mode": mode, "torch_dtype": dtype.to_torch()},
+        )
+
+    def dims_to_input_args(self, dims: dict, torch_dtype: Any) -> Tuple[Any, ...]:
+        return (dims["M"], dims["N"], torch_dtype)

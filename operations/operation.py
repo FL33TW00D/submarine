@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Callable, Any, Tuple, Optional
 import enum
+import triton.testing
 
 
 class KernelEnum(enum.Enum):
@@ -36,10 +37,6 @@ class Operation(ABC):
 
     @property
     @abstractmethod
-    def memory_bound(self) -> bool: ...
-
-    @property
-    @abstractmethod
     def kernels(self) -> type[KernelEnum]: ...
 
     @abstractmethod
@@ -59,3 +56,13 @@ class Operation(ABC):
 
     def bwd_metric(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]:
         return None
+
+    @abstractmethod
+    def get_benchmark(self, mode: Any, dtype: Any, **kwargs) -> triton.testing.Benchmark:
+        """Return a triton.testing.Benchmark configured for this operation."""
+        ...
+
+    @abstractmethod
+    def dims_to_input_args(self, dims: dict, torch_dtype: Any) -> Tuple[Any, ...]:
+        """Convert benchmark dimension dict to input args tuple for generate_*_inputs."""
+        ...
