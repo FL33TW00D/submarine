@@ -57,18 +57,14 @@ class FAOp(Operation):
         pass
 
     def fwd_metric(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]:
-        # 𝑜(𝑁2𝑑2𝑀−1)
         (q, k, v, *_) = inputs
+        # We are doing prefill, so compute bound
 
         batch, heads, seq_len, head_dim = q.shape
-        element_size = q.element_size()
 
-        M = torch.cuda.get_device_properties(DEVICE).shared_memory_per_multiprocessor / q.element_size()
-        # HBM accesses: O(N² * d² / M) elements per batch*head
-        # Total bytes = batch * heads * (N² * d² / M) * element_size
-        hbm_accesses = batch * heads * (seq_len**2) * (head_dim**2) / M * element_size
+        flops = 2 * (2 * batch * heads * seq_len * seq_len * head_dim)
 
-        return lambda ms: hbm_accesses * 1e-9 / (ms * 1e-3)
+        return lambda ms: flops * 1e-12 / (ms * 1e-3)
 
     def bwd_metric(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]:
         return None
@@ -83,7 +79,7 @@ class FAOp(Operation):
         seq_lens = [2**i for i in range(8, 15)]
         seq_lens.insert(-1, 12288)
 
-        y_label = "GB/s"
+        y_label = "TFLOPs"
 
         return triton.testing.Benchmark(
             x_names=["seq_len"],
