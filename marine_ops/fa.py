@@ -117,7 +117,6 @@ class MarineFA(torch.autograd.Function):
         (B, NH, S, D) = q.shape
 
         M = torch.cuda.get_device_properties(DEVICE).shared_memory_per_multiprocessor / q.element_size()
-        # print(f"M: {M}, Largest square matrix we can fit in shmem: {math.sqrt(M)}")
 
         Bc = math.ceil(M / (4 * D))
         Bcp = triton.next_power_of_2(Bc)
@@ -126,6 +125,7 @@ class MarineFA(torch.autograd.Function):
         Tr = math.ceil(S / Br)  # number of blocks we divide Q into
         Tc = math.ceil(S / Bc)  # number of blocks we divide K,V into
 
+        # print(f"M: {M}, Largest square matrix we can fit in shmem: {math.sqrt(M)}")
         # print(f"Br: {Br} Bc: {Bc} Tr: {Tr} Tc: {Tc}")
 
         m = torch.full((B, NH, S), float("-inf"), dtype=torch.float32, device=q.device)

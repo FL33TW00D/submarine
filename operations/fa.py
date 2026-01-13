@@ -76,9 +76,9 @@ class FAOp(Operation):
     def get_benchmark(self, mode: Any, dtype: Any, **kwargs) -> triton.testing.Benchmark:
         import triton.testing
 
-        b = 2
-        nh = 32
-        d = 128
+        b = 4
+        nh = 8
+        d = 64
 
         seq_lens = [2**i for i in range(8, 15)]
         seq_lens.insert(-1, 12288)
