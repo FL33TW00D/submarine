@@ -70,8 +70,9 @@ def _fa1_fwd(
         v = tl.load(v_ptr + j * v_stride + kv_tile_addrs, mask=full_kv_mask[:, None], other=0.0)
 
         for i in tl.range(0, Tr):
-            mold = tl.load(max_ptr + i * Br + tl.arange(0, Br))  # [Br, ]
-            dnold = tl.load(dn_ptr + i * Br + tl.arange(0, Br))  # [Br, ]
+            br_offset = i * Br + tl.arange(0, Br)
+            mold = tl.load(max_ptr + br_offset)  # [Br, ]
+            dnold = tl.load(dn_ptr + br_offset)  # [Br, ]
             oold = tl.load(o_ptr + i * o_stride + o_tile_addrs)  # [Br, D]
 
             q = tl.load(q_ptr + i * q_stride + q_tile_addrs)  # [Br, D]
@@ -96,8 +97,8 @@ def _fa1_fwd(
 
             onew = (lhs + rhs) / dnnew[:, None]
 
-            tl.store(max_ptr + i * Br + tl.arange(0, Br), mnew)
-            tl.store(dn_ptr + i * Br + tl.arange(0, Br), dnnew)
+            tl.store(max_ptr + br_offset, mnew)
+            tl.store(dn_ptr + br_offset, dnnew)
             tl.store(o_ptr + i * o_stride + o_tile_addrs, onew)
 
 
@@ -105,25 +106,6 @@ def _fa1_fwd(
 def _fa_bwd():
     pid = tl.program_id(0)
     pass
-
-
-def calculate_block_size(M: int, N: int) -> Tuple[int, int, int]:
-    # Wave quantization is the root of all evil, and this is a function of the number of SMs and our dispatch
-    # We need enough warps to be assigned to each SM to latency hide
-    # So, query the number of SMs
-    # On Ampere we have 4 tensor cores per SM.
-
-    sm_count = torch.cuda.get_device_properties(DEVICE).multi_processor_count
-
-    # our atom is m16n8k16
-    # 500 cycles to GMEM
-    # Littles Law, need 32 warps to hide the latency
-
-    # So 32 * sm_count (3090 == 82) = minimum 2624 warps
-    # So if we had 32x32 tiles, minimum matrix size is sqrt(2624*(32*32)) ~ 1600x1600
-    # 32 warps per SM
-
-    return (64, 256, 32)
 
 
 class MarineFA(torch.autograd.Function):
@@ -135,7 +117,7 @@ class MarineFA(torch.autograd.Function):
         (B, NH, S, D) = q.shape
 
         M = torch.cuda.get_device_properties(DEVICE).shared_memory_per_multiprocessor / q.element_size()
-        print(f"M: {M}, Largest square matrix we can fit in shmem: {math.sqrt(M)}")
+        # print(f"M: {M}, Largest square matrix we can fit in shmem: {math.sqrt(M)}")
 
         Bc = math.ceil(M / (4 * D))
         Bcp = triton.next_power_of_2(Bc)
@@ -144,7 +126,7 @@ class MarineFA(torch.autograd.Function):
         Tr = math.ceil(S / Br)  # number of blocks we divide Q into
         Tc = math.ceil(S / Bc)  # number of blocks we divide K,V into
 
-        print(f"Br: {Br} Bc: {Bc} Tr: {Tr} Tc: {Tc}")
+        # print(f"Br: {Br} Bc: {Bc} Tr: {Tr} Tc: {Tc}")
 
         m = torch.full((B, NH, S), float("-inf"), dtype=torch.float32, device=q.device)
         dn = torch.zeros((B, NH, S), dtype=torch.float32, device=q.device)
