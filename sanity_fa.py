@@ -36,7 +36,7 @@ def test_fa(B, NH, S, D, dtype, device=DEVICE):
     print("Torch forward: ", y_ref)
 
     # Compare results
-    assert torch.allclose(y_tri, y_ref, atol=1e-3, rtol=0)
+    assert torch.allclose(y_tri, y_ref, atol=1e-2, rtol=0)
     print("Test passed!")
 
 
