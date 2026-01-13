@@ -21,11 +21,6 @@ class FAOp(Operation):
         return "fa"
 
     @property
-    def memory_bound(self) -> bool:
-        # Depends, for MHA it's true
-        return True
-
-    @property
     def kernels(self) -> type[FAKernels]:
         return FAKernels
 
@@ -51,17 +46,56 @@ class FAOp(Operation):
         return f
 
     def generate_fwd_inputs(self, args: Any):
-        (M, N, dtype) = args
+        (B, NH, seq_len, D, dtype) = args
         torch.manual_seed(0)
-        A = torch.randn((M, 1024), dtype=dtype, device=DEVICE)
-        B = torch.randn((1024, N), dtype=dtype, device=DEVICE)
-        return (A, B)
+        q = torch.randn((B, NH, seq_len, D), dtype=dtype, device=DEVICE)
+        k = torch.randn((B, NH, seq_len, D), dtype=dtype, device=DEVICE)
+        v = torch.randn((B, NH, seq_len, D), dtype=dtype, device=DEVICE)
+        return (q, k, v)
 
     def generate_bwd_inputs(self, args: Any):
         pass
 
     def fwd_metric(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]:
-        return None
+        # 𝑜(𝑁2𝑑2𝑀−1)
+        (q, k, v, *_) = inputs
+
+        batch, heads, seq_len, head_dim = q.shape
+        element_size = q.element_size()
+
+        M = torch.cuda.get_device_properties(DEVICE).shared_memory_per_multiprocessor / q.element_size()
+        # HBM accesses: O(N² * d² / M) elements per batch*head
+        # Total bytes = batch * heads * (N² * d² / M) * element_size
+        hbm_accesses = batch * heads * (seq_len**2) * (head_dim**2) / M * element_size
+
+        return lambda ms: hbm_accesses * 1e-9 / (ms * 1e-3)
 
     def bwd_metric(self, inputs: Tuple[Any, ...]) -> Optional[Callable[[int], float]]:
         return None
+
+    def get_benchmark(self, mode: Any, dtype: Any, **kwargs) -> triton.testing.Benchmark:
+        import triton.testing
+
+        b = 2
+        nh = 32
+        d = 128
+
+        seq_lens = [2**i for i in range(8, 15)]
+        seq_lens.insert(-1, 12288)
+
+        y_label = "GB/s"
+
+        return triton.testing.Benchmark(
+            x_names=["seq_len"],
+            x_vals=seq_lens,
+            line_arg="kernel",
+            line_vals=self.kernels.line_vals(),
+            line_names=self.kernels.line_names(),
+            styles=[("blue", "-"), ("green", "--"), ("red", "-"), ("pink", "--")],
+            ylabel=y_label,
+            plot_name=f"{self.name}-{mode.value}-{dtype.value}",
+            args={"B": b, "NH": nh, "D": d, "mode": mode, "torch_dtype": dtype.to_torch()},
+        )
+
+    def dims_to_input_args(self, dims: dict, torch_dtype: Any) -> Tuple[Any, ...]:
+        return (dims["B"], dims["NH"], dims["seq_len"], dims["D"], torch_dtype)
