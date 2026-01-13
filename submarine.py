@@ -1,3 +1,4 @@
+from operations.fa import FAOp
 from operations.gemm import GEMMOp
 from operations.softmax import SoftmaxOp
 from operations.layernorm import LayerNormOp
@@ -24,6 +25,7 @@ class OpList(enum.Enum):
     SOFTMAX = "softmax"
     LAYERNORM = "layernorm"
     GEMM = "gemm"
+    FA = "fa"
 
 
 class Mode(enum.Enum):
@@ -114,6 +116,7 @@ def ncu(
     torch.manual_seed(0)
     torch_dtype = dtype.to_torch()
 
+    # todo: could probably `inspect` this
     match op:
         case OpList.LAYERNORM:
             operation = LayerNormOp()
@@ -121,6 +124,8 @@ def ncu(
             operation = SoftmaxOp()
         case OpList.GEMM:
             operation = GEMMOp()
+        case OpList.FA:
+            operation = FAOp()
 
     kernel_enum = operation.kernels(kernel)
 
