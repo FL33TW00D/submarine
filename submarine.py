@@ -113,7 +113,7 @@ def ncu(
             dims = {"M": 4096, "N": 8192}
         case OpList.FA:
             operation = FAOp()
-            dims = {"B": 2, "NH": 32, "seq_len": 4096, "D": 128}
+            dims = {"B": 4, "NH": 8, "seq_len": 4096, "D": 64}
 
     kernel_enum = operation.kernels(kernel)
     input_args = operation.dims_to_input_args(dims, torch_dtype)
