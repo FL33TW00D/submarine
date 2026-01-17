@@ -12,28 +12,36 @@ Plan:
 3. Intra Warp reduction using `shfl_sync_bfly` / xor
 4. Block reduction (inter warp), each warp needs a location in smem to write to, elect leader (0 lane), reduce shared, final result per row!
 
+# Confusions right now:
+1. SMEM layout. Each thread reduction goes from 8 -> 1 value, we need to place those values into SMEM. We want 
+to avoid bank conflicts. Each bank can hold 4B of data. We should therefore pad it out, such that each thread is
+accessing consecutive banks. How to do it?
 """
 
 
 @cute.jit
-def wt_reduce(
+def t_reduce(
     x: cute.Tensor,
     op: cute.ReductionOp,
 ) -> cute.Numeric:
-    x = x.load()
+    x = x.load()  # cute.Tensor -> cute.TensorSSA
     val = x.reduce(op, init_val=float("-inf"), reduction_profile=0)
-    val = cute.arch.warp_reduction(
-        val,
-        max,
-    )
     return val
 
 
 @cute.kernel
 def _softmax_fwd(x: cute.Tensor, y: cute.Tensor):
-    wv = wt_reduce(x, cute.ReductionOp.MAX) # reduce thread and warp
+    tidx, _, _ = cute.arch.thread_idx()
+    bidx, _, _ = cute.arch.block_idx()
+    bdim, _, _ = cute.arch.block_dim()
 
-    
+    thread_idx = bidx * bdim + tidx
+
+    m, n = x.shape[1]
+    ni = thread_idx % n
+    mi = thread_idx // n
+
+    tr = t_reduce(x[(None, (mi, ni))], cute.ReductionOp.MAX)  # reduce thread and warp
 
 
 """
@@ -46,12 +54,17 @@ def softmax(x: cute.Tensor, y: cute.Tensor):
     M, N = x.shape
     vpt = 8  # val per thread
     xz = cute.zipped_divide(x, (1, vpt))  # each thread does LDG128, so 8 values (16 * 8 = 128)
+    print(xz)
 
     threads_per_block = min(256, N // vpt)
+    num_warps = threads_per_block // cute.arch.WARP_SIZE
 
-    sA_layout = cute.make_composed_layout(cute.make_swizzle(3, 3, 3), 0, cute.make_layout(1024))
-    smem = cutlass.utils.SmemAllocator()
-    sA = smem.allocate_tensor(cutlass.Float16, sA_layout, 16)
+    # smem = cutlass.utils.SmemAllocator()
+    # smem_layout = cute.make_layout((1, num_warps))
+    # sR = smem.allocate_tensor(cutlass.Float16, smem_layout)
+
+    print(f"Threads per block {threads_per_block}")
+    print(f"Num warps: {num_warps}")
 
     _softmax_fwd(xz, y).launch(
         grid=(M, 1, 1),
@@ -60,7 +73,7 @@ def softmax(x: cute.Tensor, y: cute.Tensor):
 
 
 if __name__ == "__main__":
-    M, N = 1024, 1024
+    M, N = 2048, 2048
     x = torch.randn(M, N, device="cuda", dtype=torch.float16)
     y = torch.zeros(M, device="cuda", dtype=torch.float16)
     x_ = from_dlpack(x, assumed_align=16)
