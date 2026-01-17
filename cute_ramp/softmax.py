@@ -51,7 +51,9 @@ def _softmax_fwd(x: cute.Tensor, y: cute.Tensor, warps_per_row: cutlass.Constexp
     my_tile = x[(None, (bidx, tidx))]
     tr = thread_reduction(my_tile, cute.ReductionOp.MAX)
     vr = cute.arch.warp_reduction_max(tr)
-    y[bidx] = block_reduce_single_row(vr, sR)
+    bmax = block_reduce_single_row(vr, sR)
+    if tidx == 0:
+        y[bidx] = bmax
 
 
 """
@@ -64,19 +66,19 @@ def softmax(x: cute.Tensor, y: cute.Tensor):
     M, N = x.shape
     vpt = 128 // x.element_type.width  # LDG 128 BITS is largest coalesced load
     tpb = N // vpt
-    print(f"vpt={vpt} tpb={tpb}")
+    wpb = tpb // cute.arch.WARP_SIZE
+    print(f"vpt={vpt} tpb={tpb} wpb={wpb}")
 
     zX = cute.zipped_divide(x, (1, vpt))
-    print(zX)
 
-    _softmax_fwd(zX, y, N // cute.arch.WARP_SIZE).launch(
+    _softmax_fwd(zX, y, wpb).launch(
         grid=(M, 1, 1),
         block=(tpb, 1, 1),
     )
 
 
 if __name__ == "__main__":
-    M, N = 4096, 8192
+    M, N = 4096, 4096
     x = torch.randn(M, N, device="cuda", dtype=torch.float16)
     y = torch.zeros(M, device="cuda", dtype=torch.float16)
     x_ = from_dlpack(x, assumed_align=16)
