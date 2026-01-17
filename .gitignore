@@ -13,3 +13,4 @@ wheels/
 *.ncu-rep
 *.html
 .hypothesis/**
+*.svg
