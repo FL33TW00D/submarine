@@ -39,7 +39,7 @@ def vectorized_elementwise_add(mA: cute.Tensor, mB: cute.Tensor, mC: cute.Tensor
     print(f"[DSL INFO]   mB = {mB}")
     print(f"[DSL INFO]   mC = {mC}")
 
-    gA = cute.zipped_divide(mA, (1, 8))
+    gA = cute.zipped_divide(mA, (1, 8))  # chunk columns such that each thread owns 8 values
     gB = cute.zipped_divide(mB, (1, 8))
     gC = cute.zipped_divide(mC, (1, 8))
 
