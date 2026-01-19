@@ -7,3 +7,7 @@
 - fragment == tensor in registers
 - TV layout is very powerful
 - LDG128 is BITS not bytes
+
+## Beating Triton with CuTeDSL
+
+Triton actually seems to codegen really good code. On my 3090 we can see that my CuteDSL softmax is 2us slower! 
