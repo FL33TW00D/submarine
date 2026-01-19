@@ -49,9 +49,10 @@ def _softmax_fwd(x: cute.Tensor, y: cute.Tensor, warps_per_row: cutlass.Constexp
 
     # bidx == [0..M), tidx == [0..N//vpt)
     tile = x[(None, (bidx, tidx))].load()  # .load() cute.Tensor -> TensorSSA
+    tile = tile.to(cutlass.Float32)
 
     # Max reduction, determine scaling factor for numerical
-    thread_max = thread_reduction(tile, cute.ReductionOp.MAX, cute.BFloat16(float("-inf")))  # 8 -> 1
+    thread_max = thread_reduction(tile, cute.ReductionOp.MAX, cute.Float32(float("-inf")))  # 8 -> 1
     warp_max = cute.arch.warp_reduction_max(thread_max)  # 32 -> 1
     block_max = block_row_reduce(warp_max, lambda x, y: cute.arch.fmax(x, y), sR, cute.Float32(float("-inf")))  # N -> 1
 
@@ -77,7 +78,8 @@ Kernel launcher
 @cute.jit
 def softmax(x: cute.Tensor, y: cute.Tensor):
     M, N = x.shape
-    vpt = 128 // x.element_type.width  # LDG 128 BITS is largest coalesced load
+    # vpt = 128 // x.element_type.width  # LDG 128 BITS is largest coalesced load
+    vpt = 32
     tpb = N // vpt
     wpb = tpb // cute.arch.WARP_SIZE
     print(f"vpt={vpt} tpb={tpb} wpb={wpb}")
