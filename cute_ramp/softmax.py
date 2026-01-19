@@ -56,7 +56,7 @@ def _softmax_fwd(x: cute.Tensor, y: cute.Tensor, warps_per_row: cutlass.Constexp
     block_max = block_row_reduce(warp_max, lambda x, y: cute.arch.fmax(x, y), sR, cute.Float32(float("-inf")))  # N -> 1
 
     x_shift = tile - block_max
-    x_exp = cute.exp2(log2_e * x_shift)
+    x_exp = cute.exp2(log2_e * x_shift, fastmath=True)
 
     # Sum reduction, determine denominator
     tr_exp_sum = thread_reduction(x_exp, cute.ReductionOp.ADD)  # 8 -> 1
@@ -65,7 +65,7 @@ def _softmax_fwd(x: cute.Tensor, y: cute.Tensor, warps_per_row: cutlass.Constexp
 
     # Now divide it through
     ytile = y[(None, (bidx, tidx))]
-    out = (x_exp / denom).to(cutlass.BFloat16)
+    out = (x_exp * cute.arch.rcp_approx(denom)).to(cutlass.BFloat16)
     ytile.store(out)
 
 

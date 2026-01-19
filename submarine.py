@@ -107,7 +107,7 @@ def ncu(
             dims = {"M": 4096, "N": 8192}
         case OpList.SOFTMAX:
             operation = SoftmaxOp()
-            dims = {"M": 4096, "N": 8192}
+            dims = {"M": 4096, "N": 4096}
         case OpList.GEMM:
             operation = GEMMOp()
             dims = {"M": 4096, "N": 8192}
