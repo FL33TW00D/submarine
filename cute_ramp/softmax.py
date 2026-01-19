@@ -4,6 +4,7 @@ import torch
 from cutlass.cute.runtime import from_dlpack
 import torch.nn.functional as F
 import cutlass
+import math
 
 """
 Plan:
@@ -41,24 +42,22 @@ def _softmax_fwd(x: cute.Tensor, y: cute.Tensor, warps_per_row: cutlass.Constexp
     tidx, _, _ = cute.arch.thread_idx()
     bidx, _, _ = cute.arch.block_idx()
     bdim, _, _ = cute.arch.block_dim()
-    log2_e = 1.44269504
 
     smem = cutlass.utils.SmemAllocator()
     smem_layout = cute.make_layout((warps_per_row,))
-    sR = smem.allocate_tensor(cutlass.Float32, smem_layout)
+    sR = smem.allocate_tensor(cutlass.Float32, smem_layout, byte_alignment=16)
 
     # bidx == [0..M), tidx == [0..N//vpt)
     tile = x[(None, (bidx, tidx))].load()  # .load() cute.Tensor -> TensorSSA
     tile = tile.to(cutlass.Float32)
 
     # Max reduction, determine scaling factor for numerical
-    thread_max = thread_reduction(tile, cute.ReductionOp.MAX, init_val=cute.Float32(-3.4028235e38))  # 8 -> 1
+    thread_max = thread_reduction(tile, cute.ReductionOp.MAX, init_val=-cute.Float32.inf)  # 8 -> 1
     warp_max = cute.arch.warp_reduction_max(thread_max)  # 32 -> 1
-    block_max = block_row_reduce(
-        warp_max, lambda x, y: cute.arch.fmax(x, y), sR, init_val=cute.Float32(-3.4028235e38)
-    )  # N -> 1
+    block_max = block_row_reduce(warp_max, lambda x, y: cute.arch.fmax(x, y), sR, init_val=-cute.Float32.inf)  # N -> 1
 
     x_shift = tile - block_max
+    log2_e = math.log2(math.e)
     x_exp = cute.exp2(log2_e * x_shift, fastmath=True)
 
     # Sum reduction, determine denominator
