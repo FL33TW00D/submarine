@@ -52,9 +52,11 @@ def _softmax_fwd(x: cute.Tensor, y: cute.Tensor, warps_per_row: cutlass.Constexp
     tile = tile.to(cutlass.Float32)
 
     # Max reduction, determine scaling factor for numerical
-    thread_max = thread_reduction(tile, cute.ReductionOp.MAX, cute.Float32(float("-inf")))  # 8 -> 1
+    thread_max = thread_reduction(tile, cute.ReductionOp.MAX, init_val=cute.Float32(-3.4028235e38))  # 8 -> 1
     warp_max = cute.arch.warp_reduction_max(thread_max)  # 32 -> 1
-    block_max = block_row_reduce(warp_max, lambda x, y: cute.arch.fmax(x, y), sR, cute.Float32(float("-inf")))  # N -> 1
+    block_max = block_row_reduce(
+        warp_max, lambda x, y: cute.arch.fmax(x, y), sR, init_val=cute.Float32(-3.4028235e38)
+    )  # N -> 1
 
     x_shift = tile - block_max
     x_exp = cute.exp2(log2_e * x_shift, fastmath=True)
