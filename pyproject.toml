@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "cute-viz",
     "cyclopts>=4.4.4",
     "hypothesis>=6.149.0",
     "liger-kernel-nightly>=0.6.4.dev20260102122147",
@@ -16,3 +17,6 @@ dependencies = [
     "transformers>=4.57.3",
     "triton>=3.5.1",
 ]
+
+[tool.uv.sources]
+cute-viz = { git = "https://github.com/NTT123/cute-viz.git" }
