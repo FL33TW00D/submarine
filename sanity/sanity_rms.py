@@ -28,9 +28,21 @@ def test_rms_norm(M, N, dtype, eps=1e-5, device=DEVICE):
         mode="max-autotune-no-cudagraphs",
     )
     y_ref = f()
+    # backward pass (triton)
+    y_tri.backward(dy, retain_graph=True)
+    (dx_tri,) = [_.grad.clone() for _ in [x]]
+    x.grad, weight.grad = None, None
+    # backward pass (torch)
+    y_ref.backward(dy, retain_graph=True)
+    dx_ref, dw_ref = [_.grad.clone() for _ in [x, weight]]
+
+    print("DX Ground: ", dx_ref)
+    print("DX Triton: ", dx_tri)
+
+    # compare
+    assert torch.allclose(dx_tri, dx_ref, atol=8e-2, rtol=0)
     print(f"ours: {y_tri}")
     print(f"ground: {y_ref}")
-
     assert torch.allclose(y_tri, y_ref, atol=5e-2, rtol=0)
 
 

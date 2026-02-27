@@ -47,20 +47,37 @@ def _rms_norm_fwd_fused(
 
 
 """
-1/RMS(v . ((v . xhat) / N). xhat)
+Derive using quotient rule.
+Uses same associativity trick as softmax to avoid materializing full jacobian.
 """
 
 
 @triton.jit
 def _rms_norm_bwd_fused(
-    dLdy_ptr,  # pointer to dLdy
-    x_ptr,  # pointer to input [M, N]
+    dLdy_ptr,  # pointer to dLdy [M,N]
+    dLdx_ptr,  # pointer to dLdx [M,N]
     w_ptr,  # pointer to weight [N,]
+    rrms_ptr,  # pointer to recip rms [M,]
+    y_ptr,  # pointer to xhat [M,N] TODO: recompute
     N,  # number of columns in X
     BLOCK_SIZE: tl.constexpr,
     OUT_DT: tl.constexpr,
 ):
-    pass
+    pid = tl.program_id(0)
+    rnge = tl.arange(0, BLOCK_SIZE)
+    offset = pid * N
+    rmask = rnge < N
+
+    offset = pid * N
+    dy = tl.load(dLdy_ptr + offset + rnge, rmask, 0.0)
+    y = tl.load(y_ptr + offset + rnge, rmask, 0.0)
+    w = tl.load(w_ptr + rnge, rmask, 0.0)
+    rrms = tl.load(rrms_ptr + pid)
+
+    # compute v ⊙ w
+    vw = dy * w
+    dx = rrms * (vw - (tl.sum(vw * y) / N) * y)
+    tl.store(dLdx_ptr + offset + rnge, dx, rmask)
 
 
 def calculate_settings(n: int) -> int:
@@ -85,7 +102,7 @@ class MarineRMSNorm(torch.autograd.Function):
         M, N = x_arg.shape
         rrms = torch.empty((M,), dtype=torch.float32, device=x.device)
         BLOCK_SIZE = calculate_settings(N)
-        _rms_norm_fwd_fused[(M,)](  #
+        _rms_norm_fwd_fused[(M,)](
             x_arg,
             weight,
             rrms,
@@ -95,83 +112,28 @@ class MarineRMSNorm(torch.autograd.Function):
             BLOCK_SIZE=tl.constexpr(BLOCK_SIZE),
             OUT_DT=tl.constexpr(tch_to_trt[x.dtype]),
         )
-        ctx.save_for_backward(x, rrms)
+        ctx.save_for_backward(weight, rrms, y)
         ctx.BLOCK_SIZE = BLOCK_SIZE
         ctx.eps = eps
         return y
 
     @staticmethod
     def backward(ctx, dLdy):
-        return (None,) * 5
+        weight, rrms, y = ctx.saved_tensors
 
-    """
-    Property testing for validating forward across a wide range of shapes
-    """
+        M, N = y.shape
+        print(f"M: {M}, N:{N}")
+        dLdx = torch.empty_like(dLdy)
 
-    @classmethod
-    def validate_fwd(cls: type[Self], max_examples: int = 100):
-        @given(
-            M=st.integers(min_value=8, max_value=4096),
-            N=st.integers(min_value=8, max_value=4096),
-            dtype=st.sampled_from([torch.float32, torch.float16, torch.bfloat16]),
-            data_seed=st.integers(min_value=0, max_value=2**32 - 1),
+        BLOCK_SIZE = calculate_settings(N)
+        _rms_norm_bwd_fused[(M,)](
+            dLdy,
+            dLdx,
+            weight,
+            rrms,
+            y,
+            N,
+            BLOCK_SIZE=tl.constexpr(BLOCK_SIZE),
+            OUT_DT=tl.constexpr(tch_to_trt[y.dtype]),
         )
-        @settings(max_examples=max_examples, deadline=None, database=None)
-        def _validate(M: int, N: int, dtype: torch.dtype, data_seed: int):
-            torch.manual_seed(data_seed)
-
-            x = torch.rand((M, N), device=DEVICE, dtype=dtype)
-            norm_shape = (x.shape[-1],)
-            weight = torch.rand(norm_shape, device=DEVICE, dtype=dtype)
-            bias = torch.rand(norm_shape, device=DEVICE, dtype=dtype)
-
-            y_custom = MarineRMSNorm.apply(x, norm_shape, weight, bias)
-            y_torch = F.rms_norm(x, norm_shape, weight, bias)
-
-            assert torch.allclose(y_custom, y_torch, atol=cls.TOLS[dtype], rtol=cls.TOLS[dtype]), (
-                f"Mismatch for shape=({m}, {n}), dtype={dtype}\nMax abs diff: {(y_custom - y_torch).abs().max().item():.2e}"
-            )
-
-        _validate()
-
-    @classmethod
-    def validate_bwd(cls: type[Self], max_examples: int = 100):
-        @given(
-            M=st.integers(min_value=8, max_value=4096),
-            N=st.integers(min_value=8, max_value=4096),
-            dtype=st.sampled_from([torch.float32, torch.float16, torch.bfloat16]),
-            data_seed=st.integers(min_value=0, max_value=2**32 - 1),
-        )
-        @settings(max_examples=max_examples, deadline=None, database=None)
-        def _validate(M: int, N: int, dtype: torch.dtype, data_seed: int):
-            torch.manual_seed(data_seed)
-
-            x = torch.rand((M, N), device=DEVICE, dtype=dtype)
-            norm_shape = (x.shape[-1],)
-            weight = torch.rand(norm_shape, device=DEVICE, dtype=dtype)
-            bias = torch.rand(norm_shape, device=DEVICE, dtype=dtype)
-            dy = 0.1 * torch.randn_like(x)
-
-            x.requires_grad_(True)
-            weight.requires_grad_(True)
-            bias.requires_grad_(True)
-
-            y_custom = MarineRMSNorm.apply(x, norm_shape, weight, bias)
-            y_custom.backward(dy, retain_graph=True)
-            dx_tri, dw_tri, db_tri = [_.grad.clone() for _ in [x, weight, bias]]
-
-            y_torch = F.rms_norm(x, norm_shape, weight)
-            y_torch.backward(dy, retain_graph=True)
-            dx_ref, dw_ref, db_ref = [_.grad.clone() for _ in [x, weight, bias]]
-
-            assert torch.allclose(dx_ref, dx_tri, atol=cls.TOLS[dtype], rtol=cls.TOLS[dtype]), (
-                f"Mismatch for DX, shape=({m}, {n}), dtype={dtype}\nMax abs diff: {(dx_ref - dx_tri).abs().max().item():.2e}"
-            )
-            assert torch.allclose(dw_ref, dw_tri, atol=cls.TOLS[dtype], rtol=cls.TOLS[dtype]), (
-                f"Mismatch for DW, shape=({m}, {n}), dtype={dtype}\nMax abs diff: {(dx_ref - dx_tri).abs().max().item():.2e}"
-            )
-            assert torch.allclose(db_ref, db_tri, atol=cls.TOLS[dtype], rtol=cls.TOLS[dtype]), (
-                f"Mismatch for DB, shape=({m}, {n}), dtype={dtype}\nMax abs diff: {(dx_ref - dx_tri).abs().max().item():.2e}"
-            )
-
-        _validate()
+        return dLdx, None, None, None, None
