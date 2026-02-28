@@ -143,7 +143,7 @@ class MarineCrossEntropy(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, logits: torch.Tensor, target: torch.Tensor, reduction: str = "mean"):
+    def forward_sm86(ctx, logits: torch.Tensor, target: torch.Tensor, reduction: str = "mean"):
         logits_arg = logits.reshape(-1, logits.shape[-1])  # (B,T,V) -> (B*T,V)
         target_arg = target.reshape(-1)
         BT, V = logits_arg.shape
@@ -164,6 +164,15 @@ class MarineCrossEntropy(torch.autograd.Function):
             logits, target_arg
         )  # obviously this is abhorrent for memory usage and you should not do this
         return loss
+
+    @staticmethod
+    def forward(ctx, logits: torch.Tensor, target: torch.Tensor, reduction: str = "mean"):
+        capability = torch.cuda.get_device_capability()
+        sm_version = capability[0] * 10 + capability[1]
+        if sm_version <= 86:
+            return MarineCrossEntropy.forward_sm86(ctx, logits, target, reduction)
+        else:
+            return NotImplementedError("Sanic")
 
     @staticmethod
     def backward(ctx, dLdy: torch.Tensor):
