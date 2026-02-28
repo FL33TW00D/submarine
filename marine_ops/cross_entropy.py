@@ -33,10 +33,10 @@ $$-z_t + log(\\Sigma{e^z_t})$$
 
 @triton.jit
 def _cross_entropy_fwd_fused(
-    logits_ptr,  # pointer to the logits
-    target_ptr,  # pointer to target class labels (BT,)
-    loss_ptr,  # pointer to the
-    N,  # number of columns (vocab size)
+    logits_ptr,  # (BT,V)
+    target_ptr,  # (BT,)
+    loss_ptr,  # (BT,)
+    N,  # Vocab size
     BLOCK_SIZE: tl.constexpr,
     OUT_DT: tl.constexpr,
 ):
@@ -63,7 +63,7 @@ def _cross_entropy_fwd_fused(
 
 
 """
-$$softmax(\textbf{z})_i-{\\delta}_{ij}$$
+$$softmax(\textbf{z})_i-{\\delta}_{it}$$
 
 -z_t -> kronecker
 -d/dx[log(x)] -> 1/x
@@ -74,14 +74,40 @@ $$softmax(\textbf{z})_i-{\\delta}_{ij}$$
 
 @triton.jit
 def _cross_entropy_bwd_fused(
-    dLdy_ptr,  # pointer to dLdy (upstream gradient) [M,N]
-    y_ptr,  # pointer to the output of softmax [M,N]
-    dLdx_ptr,  # pointer to the result of this backward [M,N]
+    dLdy_ptr,  # upstream grad
+    dLdz_ptr,  # output pointer [BT, V]
+    target_ptr,  # [BT,]
+    logits_ptr,  # pointer to logits
     N,
     BLOCK_SIZE: tl.constexpr,
     OUT_DT: tl.constexpr,
 ):
-    pass
+    # We need to compute softmax over logits, same as before
+    pid = tl.program_id(0).to(tl.int64)
+    row_offset = pid * N
+    cols = tl.arange(0, BLOCK_SIZE)
+    col_mask = cols < N
+
+    row_sum_exp = 0.0
+    running_max = float("-inf")
+    for k in range(0, tl.cdiv(N, BLOCK_SIZE)):
+        chunk = tl.load(logits_ptr + row_offset + cols, col_mask, 0.0)
+        cur_max = tl.max(chunk)
+        new_max = tl.maximum(cur_max, running_max)
+
+        row_sum_exp = row_sum_exp * tl.exp(running_max - cur_max) + tl.sum(tl.exp(chunk - new_max))
+        running_max = new_max
+
+    target = tl.load(target_ptr + pid)
+
+    for k in range(0, tl.cdiv(N, BLOCK_SIZE)):
+        chunk = tl.load(logits_ptr + row_offset + cols, col_mask, 0.0)
+
+        prob = tl.exp(chunk) / row_sum_exp
+
+        mask = cols == target
+        grad = tl.where(mask, prob - 1.0, prob)  # kroooooooooonecker
+        tl.store(dLdz_ptr + row_offset + cols, grad, col_mask)
 
 
 def calculate_settings(n: int) -> int:
@@ -123,9 +149,9 @@ class MarineCrossEntropy(torch.autograd.Function):
             BLOCK_SIZE=tl.constexpr(BLOCK_SIZE),
             OUT_DT=tl.constexpr(tch_to_trt[logits_arg.dtype]),
         )
-        # ctx.save_for_backward(y)
+        ctx.save_for_backward(logits)  # obviously this is abhorrent for memory usage and you should not do this
         return loss
 
     @staticmethod
     def backward(ctx, dLdy: torch.Tensor):
-        return None * 3
+        pass
