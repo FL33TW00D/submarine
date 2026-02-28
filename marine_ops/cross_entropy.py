@@ -51,7 +51,10 @@ def _cross_entropy_fwd_fused(
     row_sum_exp = 0.0
     running_max = float("-inf")
     for k in range(0, tl.cdiv(N, BLOCK_SIZE)):
-        chunk = tl.load(logits_ptr + row_offset + cols, col_mask, 0.0)
+        offset = k * BLOCK_SIZE + cols
+        col_mask = offset < N
+
+        chunk = tl.load(logits_ptr + row_offset + offset, col_mask, 0.0)
         cur_max = tl.max(chunk)
         new_max = tl.maximum(cur_max, running_max)
 
@@ -74,10 +77,10 @@ $$softmax(\textbf{z})_i-{\\delta}_{it}$$
 
 @triton.jit
 def _cross_entropy_bwd_fused(
-    dLdy_ptr,  # upstream grad
+    dLdy_ptr,  # upstream grad [BT,]
     dLdz_ptr,  # output pointer [BT, V]
-    target_ptr,  # [BT,]
     logits_ptr,  # pointer to logits
+    target_ptr,  # [BT,]
     N,
     BLOCK_SIZE: tl.constexpr,
     OUT_DT: tl.constexpr,
@@ -91,7 +94,10 @@ def _cross_entropy_bwd_fused(
     row_sum_exp = 0.0
     running_max = float("-inf")
     for k in range(0, tl.cdiv(N, BLOCK_SIZE)):
-        chunk = tl.load(logits_ptr + row_offset + cols, col_mask, 0.0)
+        offset = k * BLOCK_SIZE + cols
+        col_mask = offset < N
+
+        chunk = tl.load(logits_ptr + row_offset + offset, col_mask, 0.0)
         cur_max = tl.max(chunk)
         new_max = tl.maximum(cur_max, running_max)
 
@@ -100,14 +106,19 @@ def _cross_entropy_bwd_fused(
 
     target = tl.load(target_ptr + pid)
 
-    for k in range(0, tl.cdiv(N, BLOCK_SIZE)):
-        chunk = tl.load(logits_ptr + row_offset + cols, col_mask, 0.0)
+    dLdy = tl.load(dLdy_ptr + pid)
 
-        prob = tl.exp(chunk) / row_sum_exp
+    for k in range(0, tl.cdiv(N, BLOCK_SIZE)):
+        offset = k * BLOCK_SIZE + cols
+        col_mask = offset < N
+
+        chunk = tl.load(logits_ptr + row_offset + offset, col_mask, 0.0)
+
+        prob = tl.exp(chunk - running_max) / row_sum_exp
 
         mask = cols == target
         grad = tl.where(mask, prob - 1.0, prob)  # kroooooooooonecker
-        tl.store(dLdz_ptr + row_offset + cols, grad, col_mask)
+        tl.store(dLdz_ptr + row_offset + cols, grad * dLdy, col_mask)
 
 
 def calculate_settings(n: int) -> int:
@@ -149,9 +160,27 @@ class MarineCrossEntropy(torch.autograd.Function):
             BLOCK_SIZE=tl.constexpr(BLOCK_SIZE),
             OUT_DT=tl.constexpr(tch_to_trt[logits_arg.dtype]),
         )
-        ctx.save_for_backward(logits)  # obviously this is abhorrent for memory usage and you should not do this
+        ctx.save_for_backward(
+            logits, target_arg
+        )  # obviously this is abhorrent for memory usage and you should not do this
         return loss
 
     @staticmethod
     def backward(ctx, dLdy: torch.Tensor):
-        pass
+        (logits, target) = ctx.saved_tensors
+
+        logits_arg = logits.reshape(-1, logits.shape[-1])  # (B,T,V) -> (B*T,V)
+        BT, V = logits_arg.shape
+
+        BLOCK_SIZE = 16384  # TODO: autotoon
+        dLdz = torch.empty_like(logits)
+        _cross_entropy_bwd_fused[(BT,)](
+            dLdy,
+            dLdz,
+            logits,
+            target,
+            V,
+            BLOCK_SIZE=tl.constexpr(BLOCK_SIZE),
+            OUT_DT=tl.constexpr(tch_to_trt[logits.dtype]),
+        )
+        return dLdz, None
