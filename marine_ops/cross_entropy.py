@@ -25,7 +25,7 @@ def cdiv(n, d):
 
 """
 Forward:
-$$-z_t + log(\Sigma{e^z_t})$$
+$$-z_t + log(\\Sigma{e^z_t})$$
 
 # Formula falls out easily from H(P,Q) = xentropy, consider the onehot
 """
@@ -46,18 +46,24 @@ def _cross_entropy_fwd_fused(
     col_mask = cols < N
 
     target = tl.load(target_ptr + pid)
-    z_t = tl.load(logits_ptr + target)
+    z_t = tl.load(logits_ptr + row_offset + target)
 
     row_sum_exp = 0.0
+    running_max = float("-inf")
     for k in range(0, tl.cdiv(N, BLOCK_SIZE)):
         chunk = tl.load(logits_ptr + row_offset + cols, col_mask, 0.0)
-        row_sum_exp += tl.sum(tl.exp(chunk))
+        cur_max = tl.max(chunk)
+        new_max = tl.maximum(cur_max, running_max)
 
-    return tl.log(row_sum_exp) - z_t
+        row_sum_exp = row_sum_exp * tl.exp(running_max - cur_max) + tl.sum(tl.exp(chunk - new_max))
+        running_max = new_max
+
+    result = tl.log(row_sum_exp) + running_max - z_t
+    tl.store(loss_ptr + pid, result)
 
 
 """
-$$softmax(\textbf{z})_i-{\delta}_{ij}$$
+$$softmax(\textbf{z})_i-{\\delta}_{ij}$$
 
 -z_t -> kronecker
 -d/dx[log(x)] -> 1/x
@@ -104,7 +110,7 @@ class MarineCrossEntropy(torch.autograd.Function):
         logits_arg = logits.reshape(-1, logits.shape[-1])  # (B,T,V) -> (B*T,V)
         target_arg = target.reshape(-1)
         BT, V = logits_arg.shape
-        loss = torch.empty(BT)  # Loss per token
+        loss = torch.empty(BT, dtype=torch.float32, device=logits.device)  # Loss per token
         # Each program solves a row, by looping the required number of times
         # V == 201 088 for gpt-oss 120B
         BLOCK_SIZE = 16384  # TODO: autotoon
