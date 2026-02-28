@@ -1,7 +1,3 @@
-"""
-Simple custom layernorm to learn :)
-"""
-
 import torch
 import torch.nn.functional as F
 import triton

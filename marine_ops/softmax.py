@@ -18,36 +18,47 @@ def _softmax_fwd_fused(
     BLOCK_SIZE: tl.constexpr,
     OUT_DT: tl.constexpr,
 ):
+    # Each program handles a single row
+    # Load from x
+    # compute max
+    # subtract max through
+    # compute sum of all
     pid = tl.program_id(0)
-    offs = tl.arange(0, BLOCK_SIZE)
-    mask = offs < N
-    row_start = pid * N
-    x = tl.load(x_ptr + row_start + offs, mask, other=0.0)
-    # One pass over data for max
-    x_max = tl.max(x)  # scalar maximum for the row
 
-    x_shift = x - x_max
-    x_shift = tl.where(offs < N, x_shift, float("-inf"))
-    x_exp = tl.exp(x_shift)
-    # One pass over data for denom
-    denom = tl.sum(x_exp)
+    offset = pid * N
+    rnge = tl.arange(0, BLOCK_SIZE)
+    x = tl.load(x_ptr + offset + rnge, rnge < N, 0.0)
 
-    # One pass over data for division
-    y = x_exp / denom
-    tl.store(y_ptr + row_start + offs, y, mask)
+    x_max = tl.max(x, axis=-1)
+    x_shift = tl.exp(x - x_max)
+    x_shift = tl.where(rnge < N, x_shift, float("-inf"))
+
+    denom = tl.sum(x_shift)
+
+    x_shift /= denom
+
+    tl.store(y_ptr + offset + rnge, x_shift, rnge < N)
 
 
 """
 Can be derived with quotient rule and some effort.
 See: https://eli.thegreenplace.net/2016/the-softmax-function-and-its-derivative/
-And: https://mmuratarat.github.io/2019-01-27/derivation-of-softmax-function
 
 def softmax_backward(dLdy, y):
-    dot = (dLdy * y).sum(dim=-1, keepdim=True)
-    
-    # Final gradient: sigma * (g - dot)
-    return y * (dLdy - dot)
+    dLdy: upstream gradient (B, T, n)
+    y:    softmax output    (B, T, n)
 
+    The Jacobian of softmax is: diag(s) - ss^T
+    This is diagonal + rank-1, so the VJP v^T J simplifies:
+
+        v ⊙ s - (v·s) s        ← two terms, all O(n)
+      = s ⊙ (v - (v·s))        ← factored form used below
+
+    No n×n matrix is ever formed.
+
+
+    dot = (dLdy * y).sum(dim=-1, keepdim=True)  # v·s per position: (B, T, 1)
+    return y * (dLdy - dot)                       # s ⊙ (v - v·s):   (B, T, n)
 """
 
 
@@ -60,19 +71,17 @@ def _softmax_bwd_fused(
     BLOCK_SIZE: tl.constexpr,
     OUT_DT: tl.constexpr,
 ):
+    # Load dLdy
+    # Load y
     pid = tl.program_id(0)
-    lrange = tl.arange(0, BLOCK_SIZE)
-    mask = lrange < N
-    row_offset = pid * N
+    rnge = tl.arange(0, BLOCK_SIZE)
+    offset = pid * N
 
-    dy = tl.load(dLdy_ptr + row_offset + lrange, mask, other=0.0)
-    y = tl.load(y_ptr + row_offset + lrange, mask, other=0.0)
+    dLdy = tl.load(dLdy_ptr + offset + rnge, rnge < N, 0.0)
+    y = tl.load(y_ptr + offset + rnge, rnge < N, 0.0)
 
-    prod = dy * y  # elementwise mul
-    red = tl.sum(prod, axis=0)
-
-    dLdx = y * (dy - red)
-    tl.store(dLdx_ptr + row_offset + lrange, dLdx, mask)
+    out = y * (dLdy - tl.sum(dLdy * y, axis=-1, keep_dims=True))
+    tl.store(dLdx_ptr + offset + rnge, out, rnge < N)
 
 
 def calculate_settings(n: int) -> int:
