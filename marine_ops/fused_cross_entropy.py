@@ -28,17 +28,12 @@ def cdiv(n, d):
 #  A(16×16) @ B(16×8) → C(16×8)
 @triton.autotune(
     configs=[
-        triton.Config({"BLOCK_V": 32, "BLOCK_K": 64, "ROW_PER_BLOCK": 16}, num_warps=4, num_stages=2),
-        triton.Config({"BLOCK_V": 32, "BLOCK_K": 128, "ROW_PER_BLOCK": 16}, num_warps=4, num_stages=3),
-        triton.Config({"BLOCK_V": 64, "BLOCK_K": 64, "ROW_PER_BLOCK": 16}, num_warps=4, num_stages=2),
-        triton.Config({"BLOCK_V": 64, "BLOCK_K": 64, "ROW_PER_BLOCK": 16}, num_warps=4, num_stages=3),
-        triton.Config({"BLOCK_V": 64, "BLOCK_K": 128, "ROW_PER_BLOCK": 16}, num_warps=4, num_stages=2),
-        triton.Config({"BLOCK_V": 128, "BLOCK_K": 64, "ROW_PER_BLOCK": 16}, num_warps=4, num_stages=2),
-        triton.Config({"BLOCK_V": 128, "BLOCK_K": 64, "ROW_PER_BLOCK": 16}, num_warps=8, num_stages=2),
-        triton.Config({"BLOCK_V": 128, "BLOCK_K": 128, "ROW_PER_BLOCK": 16}, num_warps=8, num_stages=2),
-        triton.Config({"BLOCK_V": 128, "BLOCK_K": 128, "ROW_PER_BLOCK": 16}, num_warps=8, num_stages=3),
-        triton.Config({"BLOCK_V": 256, "BLOCK_K": 64, "ROW_PER_BLOCK": 16}, num_warps=8, num_stages=3),
-        triton.Config({"BLOCK_V": 256, "BLOCK_K": 64, "ROW_PER_BLOCK": 16}, num_warps=8, num_stages=2),
+        triton.Config({"BLOCK_V": 256, "BLOCK_K": 64, "ROW_PER_BLOCK": 64}, num_warps=2, num_stages=3),
+        triton.Config({"BLOCK_V": 256, "BLOCK_K": 64, "ROW_PER_BLOCK": 64}, num_warps=4, num_stages=3),
+        triton.Config({"BLOCK_V": 256, "BLOCK_K": 64, "ROW_PER_BLOCK": 64}, num_warps=4, num_stages=2),
+        triton.Config({"BLOCK_V": 256, "BLOCK_K": 64, "ROW_PER_BLOCK": 64}, num_warps=8, num_stages=3),
+        triton.Config({"BLOCK_V": 256, "BLOCK_K": 64, "ROW_PER_BLOCK": 64}, num_warps=8, num_stages=2),
+        triton.Config({"BLOCK_V": 256, "BLOCK_K": 64, "ROW_PER_BLOCK": 64}, num_warps=16, num_stages=3),
     ],
     key=["D", "V"],
 )
@@ -155,7 +150,7 @@ class MarineLinearCrossEntropy(torch.autograd.Function):
 
         BLOCK_V = 128
         BLOCK_K = 64
-        ROW_PER_BLOCK = 16
+        ROW_PER_BLOCK = 64
         num_warps = 8
         N_PROGRAMS = cdiv(BT, ROW_PER_BLOCK)
 
