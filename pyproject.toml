@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "cuda-bench[cu12]>=0.2.0",
     "cute-viz",
     "cyclopts>=4.4.4",
     "hypothesis>=6.149.0",
