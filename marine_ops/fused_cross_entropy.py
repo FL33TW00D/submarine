@@ -26,6 +26,22 @@ def cdiv(n, d):
 
 # sm86 mma:
 #  A(16×16) @ B(16×8) → C(16×8)
+# @triton.autotune(
+#    configs=[
+#        triton.Config({"BLOCK_V": 32, "BLOCK_K": 64, "ROW_PER_BLOCK": 16}, num_warps=4, num_stages=2),
+#        triton.Config({"BLOCK_V": 32, "BLOCK_K": 128, "ROW_PER_BLOCK": 16}, num_warps=4, num_stages=3),
+#        triton.Config({"BLOCK_V": 64, "BLOCK_K": 64, "ROW_PER_BLOCK": 16}, num_warps=4, num_stages=2),
+#        triton.Config({"BLOCK_V": 64, "BLOCK_K": 64, "ROW_PER_BLOCK": 16}, num_warps=4, num_stages=3),
+#        triton.Config({"BLOCK_V": 64, "BLOCK_K": 128, "ROW_PER_BLOCK": 16}, num_warps=4, num_stages=2),
+#        triton.Config({"BLOCK_V": 64, "BLOCK_K": 128, "ROW_PER_BLOCK": 8}, num_warps=4, num_stages=3),
+#        triton.Config({"BLOCK_V": 128, "BLOCK_K": 64, "ROW_PER_BLOCK": 16}, num_warps=4, num_stages=2),
+#        triton.Config({"BLOCK_V": 128, "BLOCK_K": 64, "ROW_PER_BLOCK": 16}, num_warps=8, num_stages=2),
+#        triton.Config({"BLOCK_V": 128, "BLOCK_K": 128, "ROW_PER_BLOCK": 16}, num_warps=8, num_stages=2),
+#        triton.Config({"BLOCK_V": 128, "BLOCK_K": 128, "ROW_PER_BLOCK": 16}, num_warps=8, num_stages=3),
+#        triton.Config({"BLOCK_V": 128, "BLOCK_K": 128, "ROW_PER_BLOCK": 8}, num_warps=8, num_stages=3),
+#    ],
+#    key=["D", "V"],
+# )
 @triton.jit
 def _cross_entropy_fwdbwd_fused(
     x_ptr,  # (BT, D)
@@ -137,9 +153,11 @@ class MarineLinearCrossEntropy(torch.autograd.Function):
 
         # V == 201 088 for gpt-oss 120B
 
-        BLOCK_V = 32
+        # BLOCK_V: 128, BLOCK_K: 64, ROW_PER_BLOCK: 16, num_warps: 8, num_ctas: 1, num_stages: 2, maxnreg: None
+        BLOCK_V = 128
         BLOCK_K = 64
         ROW_PER_BLOCK = 16
+        num_warps = 8
         N_PROGRAMS = cdiv(BT, ROW_PER_BLOCK)
 
         _cross_entropy_fwdbwd_fused[(N_PROGRAMS,)](  #
@@ -153,8 +171,11 @@ class MarineLinearCrossEntropy(torch.autograd.Function):
             D=tl.constexpr(D),
             V=tl.constexpr(V),
             OUT_DT=tl.constexpr(tch_to_trt[x_arg.dtype]),
+            num_warps=num_warps,
         )
         ctx.save_for_backward(dX, dW)
+
+        # print(_cross_entropy_fwdbwd_fused.best_config)
         return loss
 
     @staticmethod
