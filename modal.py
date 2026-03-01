@@ -1,3 +1,4 @@
+# https://github.com/gau-nernst/learn-cuda/blob/main/12_megakernel/mlp_main.py
 import argparse
 import importlib
 import math
@@ -12,33 +13,61 @@ if TYPE_CHECKING:
     import cuda.bench
 
 
-# we use combined w13 to align with vLLM/SGLang impl.
-# this helps with the baseline significantly for small shapes.
-def mlp_ref(x: Tensor, w13: Tensor, w2: Tensor):
-    gate, up = (x @ w13.T).chunk(2, dim=1)
-    return (F.silu(gate) * up) @ w2.T
+from enum import Enum
+from dataclasses import dataclass
 
 
-# TFLOPS is from specsheet, membw is measured memcpy bw.
-def get_sol():
+@dataclass(frozen=True)
+class GPUSpec:
+    tflops: float
+    membw: float  # GB/s, measured memcpy bandwidth
+
+
+class GPU(Enum):
+    RTX_3090 = GPUSpec(tflops=142, membw=836)
+    RTX_4090 = GPUSpec(tflops=330, membw=1008)
+    RTX_5090 = GPUSpec(tflops=209.5, membw=1500)
+    A100 = GPUSpec(tflops=312, membw=1700)
+    H200 = GPUSpec(tflops=1979, membw=4000)
+    B200 = GPUSpec(tflops=4500, membw=8000)
+
+
+def detect_gpu() -> GPU:
     gpu_name = torch.cuda.get_device_name()
-    if "5090" in gpu_name:
-        sol = 209.5, 1500
-    elif "A100" in gpu_name:
-        sol = 312, 1700
-    elif "H200" in gpu_name:
-        sol = 1979, 4000
-    else:
-        sol = 1e9, 1e9
-    return sol
+    match gpu_name:
+        case name if "3090" in name:
+            return GPU.RTX_3090
+        case name if "4090" in name:
+            return GPU.RTX_4090
+        case name if "5090" in name:
+            return GPU.RTX_5090
+        case name if "A100" in name:
+            return GPU.A100
+        case name if "H200" in name:
+            return GPU.H200
+        case name if "B200" in name:
+            return GPU.B200
+        case _:
+            raise ValueError(f"Unknown GPU: {gpu_name}")
+
+
+def fused_linear_cross_entropy_ref(x: Tensor, weight: Tensor, target: Tensor) -> torch.Tensor:
+    logits = x @ weight.T  # (BT, V)
+    return F.cross_entropy(logits.to(torch.float32), target, reduction="none").to(torch.float32)
+
+
+def get_sol() -> tuple[float, float]:
+    gpu = detect_gpu()
+    return gpu.value.tflops, gpu.value.membw
 
 
 def get_kernel(name: str):
     if name == "eager":
-        f = mlp_ref
+        f = fused_linear_cross_entropy_ref
     elif name == "inductor":
-        # torch._inductor.config.max_autotune_gemm_backends = "TRITON"
-        f = torch.compile(mlp_ref, mode="max-autotune-no-cudagraphs", dynamic=False, fullgraph=True)
+        f = torch.compile(
+            fused_linear_cross_entropy_ref, mode="max-autotune-no-cudagraphs", dynamic=False, fullgraph=True
+        )
     else:
         m_name, f_name = name.split(".")
         f = getattr(importlib.import_module(m_name), f_name)
@@ -50,42 +79,37 @@ def to_torch_stream(s: "cuda.bench.CudaStream", device: int | None):
 
 
 def torch_bench(state: "cuda.bench.State") -> None:
-    # state.set_throttle_threshold(0.25)
     device = state.get_device()
 
-    # select kernel
     f = get_kernel(state.get_string("kernel"))
 
-    # problem shape
-    M = state.get_int64("M")
-    N = state.get_int64("N")
-    K = state.get_int64("K")
+    BT = state.get_int64("BT")
+    D = state.get_int64("D")
+    V = state.get_int64("V")
 
     stream = to_torch_stream(state.get_stream(), device)
     with torch.cuda.stream(stream):
-        # apply scaling to make sure the output doesn't explode
-        X = torch.randn(M, K, device=device).mul(K**-0.5).bfloat16()
-        W13 = torch.randn(N * 2, K, device=device).mul(K**-0.5).bfloat16()
-        W2 = torch.randn(K, N, device=device).mul(N**-0.5).bfloat16()
+        x = torch.randn(BT, D, dtype=torch.bfloat16, device=device)
+        weight = torch.randn(V, D, dtype=torch.bfloat16, device=device)
+        target = torch.randint(0, V, (BT,), device=device)
 
-        # correctness check
-        out_ref = mlp_ref(X, W13, W2)
-        out = f(X, W13, W2)
+        out_ref = fused_linear_cross_entropy_ref(x, weight, target)
+        out = f(x, weight, target)
         torch.testing.assert_close(out, out_ref)
 
         inputs_list = []
         for _ in range(state.get_int64("num_inputs")):
             # apply scaling to make sure the output doesn't explode
-            X = torch.randn(M, K, device=device).mul(K**-0.5).bfloat16()
-            W13 = torch.randn(N * 2, K, device=device).mul(K**-0.5).bfloat16()
-            W2 = torch.randn(K, N, device=device).mul(N**-0.5).bfloat16()
-            inputs_list.append((X, W13, W2))
+            x = torch.randn(BT, D, dtype=torch.bfloat16, device=device)
+            weight = torch.randn(V, D, dtype=torch.bfloat16, device=device)
+            target = torch.randint(0, V, (BT,), device=device)
+            inputs_list.append((x, weight, target))
 
     def launcher(launch: "cuda.bench.Launch") -> None:
         stream = to_torch_stream(launch.get_stream(), device)
         with torch.cuda.stream(stream):
-            for X, W13, W2 in inputs_list:
-                f(X, W13, W2)
+            for x, weight, target in inputs_list:
+                f(x, weight, target)
 
     state.exec(launcher, sync=True)
 
@@ -96,11 +120,13 @@ def benchmark(shape: list[int]):
     print(f"{torch.__version__=}")
     print(f"{torch.version.cuda=}")
 
-    M, N, K = shape
+    BT, D, V = shape
 
     # we also count writing and reading tmp buffer in total memory traffic
-    num_flops = 3 * 2 * M * N * K
-    num_gb = 2 * (2 * M * K + 3 * N * K + 2 * M * N) * 1e-9
+    gemm_flops = 2 * BT * D * V
+    non_gemm_flops = 5 * BT * V
+    num_flops = gemm_flops + non_gemm_flops
+    num_gb = ((BT * D + V * D) * 2 + 2 * BT * 4) * 1e-9
 
     # duplicate inputs to make sure each measurement is at least 10ms
     SOL_COMPUTE, SOL_MEMORY = get_sol()
@@ -111,13 +137,13 @@ def benchmark(shape: list[int]):
 
     kernels_list = []
     kernels_list += ["eager", "inductor"]
-    kernels_list += ["mlp_triton_v1.mlp_triton_v1", "mlp_triton_v1.mlp_triton_v1_2stage"]
+    kernels_list += ["fused_cross_entropy._cross_entropy_fwdbwd_fused"]
 
     bench = cuda.bench.register(torch_bench)
     bench.add_string_axis("kernel", kernels_list)
-    bench.add_int64_axis("M", [M])
-    bench.add_int64_axis("N", [N])
-    bench.add_int64_axis("K", [K])
+    bench.add_int64_axis("BT", [BT])
+    bench.add_int64_axis("D", [D])
+    bench.add_int64_axis("V", [V])
     bench.add_int64_axis("num_inputs", [num_inputs])
 
     result_path = "/tmp/result.csv"
@@ -141,15 +167,12 @@ def benchmark(shape: list[int]):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--shape", type=int, nargs="+", default=[128, 3072, 1024])
+    parser.add_argument("--shape", type=int, nargs="+", default=[16384, 512, 4096])
     parser.add_argument("--modal")
     args = parser.parse_args()
 
-    # local
     if args.modal is None:
         benchmark(args.shape)
-
-    # modal
     else:
         import modal
 
@@ -158,9 +181,9 @@ if __name__ == "__main__":
             .entrypoint([])  # remove verbose logging by base image on entry
             .uv_pip_install("torch==2.10.0", index_url="https://download.pytorch.org/whl/cu130")
             .uv_pip_install("ninja", "pandas", "tabulate", "cuda-bench[cu13]")
-            .add_local_python_source("mlp_triton_v1")
+            .add_local_python_source("marine_ops/fused_cross_entropy")
         )
-        app = modal.App("megakernel-mlp", image=image)
+        app = modal.App("fused-xentropy", image=image)
         modal_main = app.function(image=image, gpu=args.modal)(benchmark)
 
         with modal.enable_output(), app.run():
