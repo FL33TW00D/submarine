@@ -32,7 +32,7 @@ $$-z_t + log(\\Sigma{e^z_t})$$
 
 
 @triton.jit
-def _cross_entropy_fwd_fused(
+def _cross_entropy_fwd(
     logits_ptr,  # (BT,V)
     target_ptr,  # (BT,)
     loss_ptr,  # (BT,)
@@ -76,7 +76,7 @@ $$softmax(\textbf{z})_i-{\\delta}_{it}$$
 
 
 @triton.jit
-def _cross_entropy_bwd_fused(
+def _cross_entropy_bwd(
     dLdy_ptr,  # upstream grad [BT,]
     dLdz_ptr,  # output pointer [BT, V]
     logits_ptr,  # pointer to logits
@@ -152,7 +152,7 @@ class MarineCrossEntropy(torch.autograd.Function):
         # V == 201 088 for gpt-oss 120B
         BLOCK_SIZE = 16384  # TODO: autotoon
         # 201 088 / 16384 == 13 loops
-        _cross_entropy_fwd_fused[(BT,)](  #
+        _cross_entropy_fwd[(BT,)](  #
             logits_arg,
             target_arg,
             loss,
@@ -183,7 +183,7 @@ class MarineCrossEntropy(torch.autograd.Function):
 
         BLOCK_SIZE = 16384  # TODO: autotoon
         dLdz = torch.empty_like(logits)
-        _cross_entropy_bwd_fused[(BT,)](
+        _cross_entropy_bwd[(BT,)](
             dLdy,
             dLdz,
             logits,
