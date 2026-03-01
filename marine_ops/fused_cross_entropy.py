@@ -137,8 +137,8 @@ class MarineLinearCrossEntropy(torch.autograd.Function):
 
         # V == 201 088 for gpt-oss 120B
 
-        BLOCK_V = 8
-        BLOCK_K = 16
+        BLOCK_V = 32
+        BLOCK_K = 64
         ROW_PER_BLOCK = 16
         N_PROGRAMS = cdiv(BT, ROW_PER_BLOCK)
 
