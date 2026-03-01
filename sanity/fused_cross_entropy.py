@@ -26,7 +26,4 @@ def test_fused_cross_entropy_fwd(BT, D, V, dtype, device=DEVICE):
     print("Forward pass OK")
 
 
-# BT must be a multiple of ROW_PER_BLOCK (16), D a multiple of BLOCK_K (16),
-# and V a multiple of BLOCK_V (8).
-test_fused_cross_entropy_fwd(BT=32, D=64, V=64, dtype=torch.bfloat16)
-test_fused_cross_entropy_fwd(BT=64, D=512, V=2048, dtype=torch.bfloat16)
+test_fused_cross_entropy_fwd(BT=16384, D=512, V=4096, dtype=torch.bfloat16)
