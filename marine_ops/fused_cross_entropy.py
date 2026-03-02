@@ -26,6 +26,8 @@ def cdiv(n, d):
 
 # sm86 mma:
 #  A(16×16) @ B(16×8) → C(16×8)
+# sm90 wgmma:
+#  [64×16] × [16×256] → [64×256]
 @triton.autotune(
     configs=[
         triton.Config({"BLOCK_V": 256, "BLOCK_K": 64, "ROW_PER_BLOCK": 64}, num_warps=2, num_stages=3),
@@ -148,13 +150,13 @@ class MarineLinearCrossEntropy(torch.autograd.Function):
 
         # V == 201 088 for gpt-oss 120B
 
-        BLOCK_V = 128
-        BLOCK_K = 64
+        # BLOCK_V = 64
+        # BLOCK_K = 16
         ROW_PER_BLOCK = 64
-        num_warps = 8
+        # num_warps = 4
         N_PROGRAMS = cdiv(BT, ROW_PER_BLOCK)
 
-        _cross_entropy_fwdbwd_fused[(N_PROGRAMS,)](  #
+        compiled = _cross_entropy_fwdbwd_fused[(N_PROGRAMS,)](  #
             x_arg,
             weight,
             target_arg,
@@ -168,7 +170,9 @@ class MarineLinearCrossEntropy(torch.autograd.Function):
             # num_warps=num_warps,
         )
         # ctx.save_for_backward(dX, dW)
-        print(_cross_entropy_fwdbwd_fused.best_config)
+        # print(_cross_entropy_fwdbwd_fused.best_config)
+        # print(compiled.asm["ptx"])
+
         return loss
 
     @staticmethod
