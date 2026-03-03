@@ -47,7 +47,7 @@ def _fa_fwd(
 
     q_addrs = q_base + tl.arange(0, Br)[:, None] * D + tl.arange(0, D)[None, :]
 
-    q = tl.load(q_addrs)
+    q = tl.load(q_addrs) * sf.to(tl.bfloat16)
 
     kv_bh_offset = pid_0 * S * D
 
@@ -77,7 +77,7 @@ def _fa_fwd(
         k = tl.load(k_block_ptr)
         v = tl.load(v_block_ptr)
 
-        scores = tl.dot(q, k) * sf
+        scores = tl.dot(q, k).to(tl.float32)
 
         cmax = tl.max(scores, axis=1)
         nmax = tl.maximum(gmax, cmax)
@@ -103,7 +103,7 @@ def _fa_fwd(
     out_base = out_ptr + out_bh_offset + out_t_offset
 
     out_addrs = out_base + tl.arange(0, Br)[:, None] * D + tl.arange(0, D)[None, :]
-    tl.store(out_addrs, out)
+    tl.store(out_addrs, out.to(tl.bfloat16))
 
     lse_addrs = (pid_0 * T) + (pid_1 * Br) + tl.arange(0, Br)
     tl.store(lse_ptr + lse_addrs, lse)
@@ -130,10 +130,12 @@ class MarineFA(torch.autograd.Function):
 
         sf = 1.0 / math.sqrt(D)
 
-        Br = 64
-        Bc = 64
+        Br = 64  # increasing Br means larger Q chunk is solved, reducing repeated loads of K&V
+        Bc = 32  # increasing Bc means larger K chunk is solved, increasing SMEM usage
         Tr = math.ceil(T / Br)
         Tc = math.ceil(T / Bc)
+
+        print(f"Tr: {Tr} Tc: {Tc}")
 
         _fa_fwd[(B * Hq, Tr)](
             q,
@@ -153,8 +155,8 @@ class MarineFA(torch.autograd.Function):
             tl.constexpr(Bc),
             Tr,
             Tc,
+            num_stages=2,
         )
-        print(out)
 
         return out
 
