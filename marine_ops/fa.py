@@ -131,13 +131,13 @@ class MarineFA(torch.autograd.Function):
         sf = 1.0 / math.sqrt(D)
 
         Br = 64  # increasing Br means larger Q chunk is solved, reducing repeated loads of K&V
-        Bc = 32  # increasing Bc means larger K chunk is solved, increasing SMEM usage
+        Bc = 64  # increasing Bc means larger K chunk is solved, increasing SMEM usage
         Tr = math.ceil(T / Br)
         Tc = math.ceil(T / Bc)
 
         print(f"Tr: {Tr} Tc: {Tc}")
 
-        _fa_fwd[(B * Hq, Tr)](
+        compiled = _fa_fwd[(B * Hq, Tr)](
             q,
             k,
             v,
@@ -157,6 +157,10 @@ class MarineFA(torch.autograd.Function):
             Tc,
             num_stages=2,
         )
+
+        print(f"Physical regs/thread: {compiled.n_regs}")
+        print(f"Spills:               {compiled.n_spills}")
+        print(f"SMEM:                 {compiled.metadata.shared} bytes")
 
         return out
 
