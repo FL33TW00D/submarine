@@ -31,4 +31,17 @@ def test_fa(B, Hq, Hkv, S, T, D, dtype, device=DEVICE):
     # print("Test passed!")
 
 
-test_fa(B=4, Hq=8, Hkv=8, S=512, T=512, D=64, dtype=torch.bfloat16)
+def test_fa_flash(B, Hq, Hkv, S, T, D, dtype, device=DEVICE):
+    from flash_attn import flash_attn_func
+
+    # flash_attn_func expects (B, S, H, D)
+    Q = torch.randn((B, T, Hq, D), dtype=dtype, device=device)
+    K = torch.randn((B, S, Hkv, D), dtype=dtype, device=device)
+    V = torch.randn((B, S, Hkv, D), dtype=dtype, device=device)
+
+    y = flash_attn_func(Q, K, V)
+    return y
+
+
+test_fa(B=4, Hq=16, Hkv=16, S=2048, T=2048, D=128, dtype=torch.bfloat16)
+# test_fa_flash(B=4, Hq=16, Hkv=16, S=2048, T=2048, D=128, dtype=torch.bfloat16)
