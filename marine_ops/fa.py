@@ -1,4 +1,3 @@
-from hopper.benchmark_attn import q
 from typing import Tuple
 import torch
 import triton
@@ -129,7 +128,7 @@ Tri has done a nice simplification here.
 
 Pseudocode here: https://arxiv.org/pdf/2307.08691#page=7
 
-Each program is wholly responsible for 1 tile of K & V.
+Each program is wholly responsible for 1 tile of K & V [Bc, D]
 """
 
 
@@ -138,13 +137,13 @@ def _fa_bwd(
     q_ptr,  # input q [B,Hq,T,D]
     k_ptr,  # input k [B,Hk,S,D]
     v_ptr,  # input v [B,Hk,S,D]
-    out_ptr,  # input out
     alpha_ptr,  # alpha = rowsum(d0 ○ O) [B, Hq, D]
-    lse_ptr,  # input logsumexp
+    lse_ptr,  # input logsumexp [B, Hq, T]
     dout_ptr,  # input dout [B,Hq,T,D]
     dq_ptr,  # output dq like(q)
     dk_ptr,  # output dk like(k)
     dv_ptr,  # output dv like(v)
+    sf,
     B,
     Hq,
     S,
@@ -166,32 +165,55 @@ def _fa_bwd(
     k = tl.load(k_ptr + kv_addrs)
     v = tl.load(v_ptr + kv_addrs)
 
-    dK = tl.zeros((Bc, D), tl.float32)
-    dV = tl.zeros((Bc, D), tl.float32)
-
     bhq_off_0 = pid_0 * T * D
 
     # All of these are the same, traversing a [T, D] subtensor in [Br,D] blocks
-    qo_kwargs = {"shape": (T, D), "strides": (D, 1), "offsets": (0, 0), "block_shape": (Br, D), "order": (1, 0)}
-    q_bptr = tl.make_block_ptr(base=q_ptr + bhq_off_0, **qo_kwargs)
-    dq_bptr = tl.make_block_ptr(base=dq_ptr + bhq_off_0, **qo_kwargs)
-    out_bptr = tl.make_block_ptr(base=out_ptr + bhq_off_0, **qo_kwargs)
-    dout_bptr = tl.make_block_ptr(base=dout_ptr + bhq_off_0, **qo_kwargs)
+    q_bptr = tl.make_block_ptr(
+        base=q_ptr + bhq_off_0, shape=(T, D), strides=(D, 1), offsets=(0, 0), block_shape=(Br, D), order=(1, 0)
+    )
+    dout_bptr = tl.make_block_ptr(
+        base=dout_ptr + bhq_off_0, shape=(T, D), strides=(D, 1), offsets=(0, 0), block_shape=(Br, D), order=(1, 0)
+    )
+
+    la_offset = pid_0 * T
+    lse_bptr = tl.make_block_ptr(
+        base=lse_ptr + la_offset, shape=(T,), strides=(1,), offsets=(0,), block_shape=(Br,), order=(0,)
+    )
+    alpha_bptr = tl.make_block_ptr(
+        base=alpha_ptr + la_offset, shape=(T,), strides=(1,), offsets=(0,), block_shape=(Br,), order=(0,)
+    )
+
+    dK = tl.zeros((Bc, D), tl.float32)
+    dV = tl.zeros((Bc, D), tl.float32)
 
     for i in range(0, Tr):
         q = tl.load(q_bptr)  # [Br, D]
-        dq = tl.load(dq_bptr)  # [Br, D]
-        out = tl.load(out_bptr)  # [Br, D]
         dout = tl.load(dout_bptr)  # [Br, D]
+        lse = tl.load(lse_bptr)  # [Br, ]
+        alpha = tl.load(alpha_bptr)  # [Br, ]
+
+        s = tl.dot(q, tl.trans(k)) * sf
+        p = tl.exp(s - lse[:, None])
+
+        dV += tl.dot(tl.trans(p).to(dout.dtype), dout)
+        dP = tl.dot(dout, tl.trans(v))
+
+        dS = p * (dP - alpha[:, None])
+
+        dq_cur = tl.dot(dS.to(k.dtype), k) * sf
+
+        dq_addrs = bhq_off_0 + i * Br * D + tl.arange(0, Br)[:, None] * D + tl.arange(0, D)
+        tl.atomic_add(dq_ptr + dq_addrs, dq_cur.to(q.dtype))
+
+        dK += tl.dot(tl.trans(dS).to(q.dtype), q) * sf
 
         q_bptr = tl.advance(q_bptr, (Br, 0))
-        dq_bptr = tl.advance(dq_bptr, (Br, 0))
-        out_bptr = tl.advance(out_bptr, (Br, 0))
         dout_bptr = tl.advance(dout_bptr, (Br, 0))
+        lse_bptr = tl.advance(lse_bptr, (Br,))
+        alpha_bptr = tl.advance(alpha_bptr, (Br,))
 
-        pass
-
-    pass
+    tl.store(dk_ptr + kv_addrs, dK)
+    tl.store(dv_ptr + kv_addrs, dV)
 
 
 class MarineFA(torch.autograd.Function):
@@ -245,7 +267,7 @@ class MarineFA(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, dLdo):
-        q, k, v, out, lse = ctx
+        q, k, v, out, lse = ctx.saved_tensors
 
         B, Hq, T, D = q.shape
         _, Hk, S, _ = k.shape
@@ -257,7 +279,7 @@ class MarineFA(torch.autograd.Function):
         sf = 1.0 / math.sqrt(D)
 
         Br = 64
-        Bc = 64
+        Bc = 32
 
         Tr = math.ceil(T / Br)
         Tc = math.ceil(T / Bc)
@@ -268,13 +290,13 @@ class MarineFA(torch.autograd.Function):
             q,
             k,
             v,
-            out,
             alpha,
             lse,
             dLdo,
             dq,
             dk,
             dv,
+            sf,
             B,
             Hq,
             S,
@@ -284,6 +306,7 @@ class MarineFA(torch.autograd.Function):
             tl.constexpr(Bc),
             Tr,
             Tc,
+            num_stages=1,
         )
 
         print(f"Physical regs/thread: {compiled.n_regs}")
