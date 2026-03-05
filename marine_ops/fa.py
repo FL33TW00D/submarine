@@ -12,132 +12,307 @@ tch_to_trt = {
     torch.bfloat16: tl.bfloat16,
 }
 
+"""
+                                 Forward Circuit
+
+  Q [Br,D]                          S [Br,Bc]                P [Br,Bc]                O [Br,D]
+    ○──────────── matmul ──────────▶ ○ ──────── softmax ────▶ ○ ─────────────────────▶ ○
+                    ▲                                         ▲ 
+                    │                                         │
+  K [Bc,D]          │                                       matmul
+    ○──── trans ────┘                                         │
+                                                              │
+  V [Bc,D]                                                    │
+    ○─────────────────────────────────────────────────────────┘
+
+S = Q @ K^T          [Br,D] x [D,Bc] -> [Br,Bc]
+P = softmax(S)       [Br,Bc]
+O = P @ V            [Br,Bc] x [Bc,D] -> [Br,D]
+
+Parallel over batch and heads, and sequence in FA2
+pid_0 is B*Hq, pid_1 is chunk of Q
+"""
+
 
 @triton.jit
-def _fa1_fwd(
-    q_ptr,
-    k_ptr,
-    v_ptr,
-    o_ptr,
-    dn_ptr,
-    max_ptr,
-    sf,
-    B: tl.constexpr,
-    NH: tl.constexpr,
-    S: tl.constexpr,
+def _fa_fwd(
+    q_ptr,  # [B,Hq,T,D]
+    k_ptr,  # [B,Hk,S,D]
+    v_ptr,  # [B,Hk,S,D]
+    out_ptr,  # like(Q)
+    lse_ptr,  # logsumexp used for bwd
+    sf,  # scale factor
+    B,
+    Hq,
+    S,
+    T,
     D: tl.constexpr,
-    Br: tl.constexpr,
-    Bc: tl.constexpr,
-    Bcp: tl.constexpr,
-    Tr: tl.constexpr,
-    Tc: tl.constexpr,
+    Br: tl.constexpr,  # Size of Q_tile [Br, D]
+    Bc: tl.constexpr,  # Size of KV_tile [Bc, D]
+    Tr: tl.constexpr,  # Num Q/O tiles
+    Tc: tl.constexpr,  # Num K/V tiles
 ):
-    # Each program is responsible for solving one head. So a whole Q,K,V mat
-    pid_b = tl.program_id(0)
-    pid_h = tl.program_id(1)
+    pid_0 = tl.program_id(0)
+    pid_1 = tl.program_id(1)
 
-    # TODO: Dq != Dv
-    b_offset = NH * S * D  # batch offset
-    h_offset = S * D  # head offset
+    qo_bh_offset = pid_0 * T * D
+    qo_t_offset = pid_1 * Br * D
+    q_base = q_ptr + qo_bh_offset + qo_t_offset
 
-    global_offset = pid_b * b_offset + pid_h * h_offset
+    q_addrs = q_base + tl.arange(0, Br)[:, None] * D + tl.arange(0, D)[None, :]
 
-    q_ptr += global_offset
-    k_ptr += global_offset
-    v_ptr += global_offset
-    o_ptr += global_offset
-    dn_ptr += pid_b * NH * S + pid_h * S
-    max_ptr += pid_b * NH * S + pid_h * S
+    q = tl.load(q_addrs) * sf.to(tl.bfloat16)
 
-    q_stride = Br * D
-    k_stride = Bc * D
-    v_stride = Bc * D
-    o_stride = Br * D
+    kv_bh_offset = pid_0 * S * D
 
-    kv_row_idx = tl.arange(0, Bcp)  # Triton only supports tl.arange when end % 2 == 0
-    kv_mask = kv_row_idx < Bc
+    k_block_ptr = tl.make_block_ptr(
+        base=k_ptr + kv_bh_offset,
+        shape=(D, S),
+        strides=(1, D),
+        offsets=(0, 0),
+        block_shape=(D, Bc),
+        order=(1, 0),
+    )
 
-    q_tile_addrs = tl.arange(0, Br)[:, None] * D + tl.arange(0, D)[None, :]
-    kv_tile_addrs = kv_row_idx[:, None] * D + tl.arange(0, D)[None, :]
-    o_tile_addrs = tl.arange(0, Br)[:, None] * D + tl.arange(0, D)[None, :]
+    v_block_ptr = tl.make_block_ptr(
+        base=v_ptr + kv_bh_offset,
+        shape=(S, D),
+        strides=(D, 1),
+        offsets=(0, 0),
+        block_shape=(Bc, D),
+        order=(1, 0),
+    )
 
-    for j in tl.range(0, Tc):
-        col_idx = j * Bc + kv_row_idx
-        seq_mask = col_idx < S
-        full_kv_mask = kv_mask & seq_mask
+    out = tl.zeros((Br, D), tl.float32)
+    denom = tl.zeros((Br,), tl.float32)
+    gmax = tl.full((Br,), float("-inf"), tl.float32)
 
-        k = tl.load(k_ptr + j * k_stride + kv_tile_addrs, mask=full_kv_mask[:, None], other=0.0)
-        v = tl.load(v_ptr + j * v_stride + kv_tile_addrs, mask=full_kv_mask[:, None], other=0.0)
+    for i in range(0, Tc):
+        k = tl.load(k_block_ptr)
+        v = tl.load(v_block_ptr)
 
-        for i in tl.range(0, Tr):
-            br_offset = i * Br + tl.arange(0, Br)
-            mold = tl.load(max_ptr + br_offset)  # [Br, ]
-            dnold = tl.load(dn_ptr + br_offset)  # [Br, ]
-            oold = tl.load(o_ptr + i * o_stride + o_tile_addrs)  # [Br, D]
+        scores = tl.dot(q, k).to(tl.float32)
 
-            q = tl.load(q_ptr + i * q_stride + q_tile_addrs)  # [Br, D]
+        cmax = tl.max(scores, axis=1)
+        nmax = tl.maximum(gmax, cmax)
 
-            scores = tl.dot(q, tl.trans(k)) * sf  # [Br, D] @ [D, Bc] -> [Br, Bc]
-            scores = tl.where(full_kv_mask[None, :], scores, float("-inf"))
-            scores = scores.to(tl.float32)
+        p = tl.exp(scores - nmax[:, None])
+        d_cur = tl.sum(p, axis=1)
 
-            mcur = tl.max(scores, axis=1)  # [Br, ]
-            p = tl.exp(scores - mcur[:, None])  # [Br, Bc]
-            dncur = tl.sum(p, axis=1)  # [Br, ]
+        # if gmax == nmax, tl.exp(0) == 1, no effect
+        alpha = tl.exp(gmax - nmax)  # nmax > gmax, e.g tl.exp(-0.5) ~= 0.6, scales down prior contributions
+        denom = denom * alpha + d_cur
 
-            mnew = tl.maximum(mcur, mold)
+        out = alpha[:, None] * out + tl.dot(p.to(v.dtype), v)
+        gmax = nmax
 
-            alpha = tl.exp(mold - mnew)
-            beta = tl.exp(mcur - mnew)
+        k_block_ptr = tl.advance(k_block_ptr, (0, Bc))
+        v_block_ptr = tl.advance(v_block_ptr, (Bc, 0))
 
-            dnnew = dnold * alpha + dncur * beta
+    out /= denom[:, None]
+    lse = tl.log(denom) + gmax
 
-            lhs = alpha[:, None] * dnold[:, None] * oold
-            rhs = beta[:, None] * tl.dot(p.to(v.dtype), v)
+    out_base = out_ptr + qo_bh_offset + qo_t_offset
 
-            onew = (lhs + rhs) / dnnew[:, None]
+    out_addrs = out_base + tl.arange(0, Br)[:, None] * D + tl.arange(0, D)[None, :]
+    tl.store(out_addrs, out.to(tl.bfloat16))
 
-            tl.store(max_ptr + br_offset, mnew)
-            tl.store(dn_ptr + br_offset, dnnew)
-            tl.store(o_ptr + i * o_stride + o_tile_addrs, onew)
+    lse_addrs = (pid_0 * T) + (pid_1 * Br) + tl.arange(0, Br)
+    tl.store(lse_ptr + lse_addrs, lse)
+
+
+"""
+FA2 backward
+The only tricky part is the computation of dS, as this requires differentiating through softmax.
+Tri has done a nice simplification here.
+
+Pseudocode here: https://arxiv.org/pdf/2307.08691#page=7
+
+Each program is wholly responsible for 1 tile of K & V [Bc, D]
+"""
 
 
 @triton.jit
-def _fa_bwd():
-    pid = tl.program_id(0)
-    pass
+def _fa_bwd(
+    q_ptr,  # input q [B,Hq,T,D]
+    k_ptr,  # input k [B,Hk,S,D]
+    v_ptr,  # input v [B,Hk,S,D]
+    alpha_ptr,  # alpha = rowsum(d0 ○ O) [B, Hq, D]
+    lse_ptr,  # input logsumexp [B, Hq, T]
+    dout_ptr,  # input dout [B,Hq,T,D]
+    dq_ptr,  # output dq like(q)
+    dk_ptr,  # output dk like(k)
+    dv_ptr,  # output dv like(v)
+    sf,
+    B,
+    Hq,
+    S,
+    T,
+    D: tl.constexpr,
+    Br: tl.constexpr,  # Size of Q_tile [Br, D]
+    Bc: tl.constexpr,  # Size of KV_tile [Bc, D]
+    Tr: tl.constexpr,  # Num Q/O tiles
+    Tc: tl.constexpr,  # Num K/V tiles
+):
+    pid_0 = tl.program_id(0)  # B*Hq programs
+    pid_1 = tl.program_id(1)  # Tc programs
+
+    # Load K and V tile
+    kv_off_0 = pid_0 * S * D
+    kv_off_1 = pid_1 * Bc * D
+    kv_addrs = kv_off_0 + kv_off_1 + (tl.arange(0, Bc)[:, None] * D + tl.arange(0, D))
+
+    k = tl.load(k_ptr + kv_addrs)
+    v = tl.load(v_ptr + kv_addrs)
+
+    bhq_off_0 = pid_0 * T * D
+
+    # All of these are the same, traversing a [T, D] subtensor in [Br,D] blocks
+    q_bptr = tl.make_block_ptr(
+        base=q_ptr + bhq_off_0, shape=(T, D), strides=(D, 1), offsets=(0, 0), block_shape=(Br, D), order=(1, 0)
+    )
+    dout_bptr = tl.make_block_ptr(
+        base=dout_ptr + bhq_off_0, shape=(T, D), strides=(D, 1), offsets=(0, 0), block_shape=(Br, D), order=(1, 0)
+    )
+
+    la_offset = pid_0 * T
+    lse_bptr = tl.make_block_ptr(
+        base=lse_ptr + la_offset, shape=(T,), strides=(1,), offsets=(0,), block_shape=(Br,), order=(0,)
+    )
+    alpha_bptr = tl.make_block_ptr(
+        base=alpha_ptr + la_offset, shape=(T,), strides=(1,), offsets=(0,), block_shape=(Br,), order=(0,)
+    )
+
+    dK = tl.zeros((Bc, D), tl.float32)
+    dV = tl.zeros((Bc, D), tl.float32)
+
+    for i in range(0, Tr):
+        q = tl.load(q_bptr)  # [Br, D]
+        dout = tl.load(dout_bptr)  # [Br, D]
+        lse = tl.load(lse_bptr)  # [Br, ]
+        alpha = tl.load(alpha_bptr)  # [Br, ]
+
+        s = tl.dot(q, tl.trans(k)) * sf
+        p = tl.exp(s - lse[:, None])
+
+        dV += tl.dot(tl.trans(p).to(dout.dtype), dout)
+        dP = tl.dot(dout, tl.trans(v))
+
+        dS = p * (dP - alpha[:, None])
+
+        dq_cur = tl.dot(dS.to(k.dtype), k) * sf
+
+        dq_addrs = bhq_off_0 + i * Br * D + tl.arange(0, Br)[:, None] * D + tl.arange(0, D)
+        tl.atomic_add(dq_ptr + dq_addrs, dq_cur.to(q.dtype))
+
+        dK += tl.dot(tl.trans(dS).to(q.dtype), q) * sf
+
+        q_bptr = tl.advance(q_bptr, (Br, 0))
+        dout_bptr = tl.advance(dout_bptr, (Br, 0))
+        lse_bptr = tl.advance(lse_bptr, (Br,))
+        alpha_bptr = tl.advance(alpha_bptr, (Br,))
+
+    tl.store(dk_ptr + kv_addrs, dK)
+    tl.store(dv_ptr + kv_addrs, dV)
 
 
 class MarineFA(torch.autograd.Function):
+    # scaled_dot_product_attention(query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False, scale=None, enable_gqa=False)
     @staticmethod
     def forward(ctx, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
         if q.ndim != 4 or k.ndim != 4 or v.ndim != 4:
             raise ValueError(f"Expected 4D tensors, got q.ndim={q.ndim}, k.ndim={k.ndim} v.ndim={v.ndim}")
 
-        (B, NH, S, D) = q.shape
+        B, Hq, T, D = q.shape
+        _, Hk, S, _ = k.shape
 
-        M = torch.cuda.get_device_properties(DEVICE).shared_memory_per_multiprocessor / q.element_size()
+        out = torch.empty_like(q)
+        lse = torch.empty((B, Hq, T), dtype=torch.float32, device=out.device)
 
-        Bc = math.ceil(M / (4 * D))
-        Bcp = triton.next_power_of_2(Bc)
-        Br = min(Bc, D)
+        sf = 1.0 / math.sqrt(D)
 
-        Tr = math.ceil(S / Br)  # number of blocks we divide Q into
-        Tc = math.ceil(S / Bc)  # number of blocks we divide K,V into
+        Br = 64  # increasing Br means larger Q chunk is solved, reducing repeated loads of K&V
+        Bc = 64  # increasing Bc means larger K chunk is solved, increasing SMEM usage
+        Tr = math.ceil(T / Br)
+        Tc = math.ceil(T / Bc)
 
-        # print(f"M: {M}, Largest square matrix we can fit in shmem: {math.sqrt(M)}")
-        # print(f"Br: {Br} Bc: {Bc} Tr: {Tr} Tc: {Tc}")
+        print(f"Tr: {Tr} Tc: {Tc}")
 
-        m = torch.full((B, NH, S), float("-inf"), dtype=torch.float32, device=q.device)
-        dn = torch.zeros((B, NH, S), dtype=torch.float32, device=q.device)
-        o = torch.zeros(q.shape, dtype=q.dtype, device=q.device)
+        compiled = _fa_fwd[(B * Hq, Tr)](
+            q,
+            k,
+            v,
+            out,
+            lse,
+            sf,
+            B,
+            Hq,
+            S,
+            T,
+            tl.constexpr(D),
+            tl.constexpr(Br),
+            tl.constexpr(Bc),
+            Tr,
+            Tc,
+            num_stages=2,
+        )
 
-        sf = 1 / math.sqrt(D)
+        print(f"Physical regs/thread: {compiled.n_regs}")
+        print(f"Spills:               {compiled.n_spills}")
+        print(f"SMEM:                 {compiled.metadata.shared} bytes")
 
-        _fa1_fwd[(B, NH)](q, k, v, o, dn, m, sf, B, NH, S, D, Br, Bc, Bcp, Tr, Tc)
-        ctx.save_for_backward(o)
-        return o
+        ctx.save_for_backward(q, k, v, out, lse)
+
+        return out
 
     @staticmethod
-    def backward(ctx, dLdc):
-        return
+    def backward(ctx, dLdo):
+        q, k, v, out, lse = ctx.saved_tensors
+
+        B, Hq, T, D = q.shape
+        _, Hk, S, _ = k.shape
+
+        dq = torch.empty_like(q)
+        dk = torch.empty_like(k)
+        dv = torch.empty_like(v)
+
+        sf = 1.0 / math.sqrt(D)
+
+        Br = 64
+        Bc = 32
+
+        Tr = math.ceil(T / Br)
+        Tc = math.ceil(T / Bc)
+
+        alpha = torch.sum(dLdo * out, dim=-1)
+
+        compiled = _fa_bwd[(B * Hq, Tc)](
+            q,
+            k,
+            v,
+            alpha,
+            lse,
+            dLdo,
+            dq,
+            dk,
+            dv,
+            sf,
+            B,
+            Hq,
+            S,
+            T,
+            tl.constexpr(D),
+            tl.constexpr(Br),
+            tl.constexpr(Bc),
+            Tr,
+            Tc,
+            num_stages=1,
+        )
+
+        print(f"Physical regs/thread: {compiled.n_regs}")
+        print(f"Spills:               {compiled.n_spills}")
+        print(f"SMEM:                 {compiled.metadata.shared} bytes")
+
+        ctx.save_for_backward(q, k, v, out, lse)
+
+        return dq, dk, dv
