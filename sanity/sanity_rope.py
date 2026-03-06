@@ -41,8 +41,8 @@ class RoPE(nn.Module):
         B, L, D = q.shape
         assert D == self.dim
 
-        sin = self.sin_cached
-        cos = self.cos_cached
+        sin = self.sin_cached[:L]
+        cos = self.cos_cached[:L]
         q_embed = (q * cos) + (self.rotate_half(q) * sin)
         k_embed = (k * cos) + (self.rotate_half(k) * sin)
         return q_embed, k_embed
@@ -71,6 +71,8 @@ def test_rope(B, S, D, dtype, device=DEVICE):
 
     print("THEIRS: ", rq_rot)
     print("OURS: ", oq_rot)
+    max_diff = torch.max(torch.abs(oq_rot - rq_rot))
+    print(f"Max diff: {max_diff}")
     assert torch.allclose(rq_rot, oq_rot, atol=1e-3, rtol=0)
     assert torch.allclose(rk_rot, ok_rot, atol=1e-3, rtol=0)
     print("Test passed!")

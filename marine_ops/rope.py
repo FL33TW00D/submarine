@@ -13,69 +13,59 @@ tch_to_trt = {
 }
 
 
-# Each program is responsible for a row
-
-
 @triton.jit
 def _rope_fwd(
-    q_ptr,
-    k_ptr,
-    sin_ptr,
-    cos_ptr,
-    qo_ptr,
-    ko_ptr,
+    q_ptr,  # input q [BSD]
+    k_ptr,  # input k [BSD]
+    sin_ptr,  # input sin_cached [MD]
+    cos_ptr,  # input cos_cached [MD]
+    qrot_ptr,  # output q [BSD]
+    krot_ptr,  # output k [BSD]
     B: tl.constexpr,
     S: tl.constexpr,
     D: tl.constexpr,
 ):
-    pid = tl.program_id(0)
-    dr = tl.arange(0, D)
-    gr = pid * D + dr
-    half_D = D // 2
+    pid_0 = tl.program_id(0)
+    b_offset = pid_0 * S * D
+    d_half = D // 2
 
-    q = tl.load(q_ptr + gr)
-    k = tl.load(k_ptr + gr)
+    qk_rows = tl.arange(0, S)[:, None] * D
+    qk_cols = tl.arange(0, D)
+    qk_addrs = qk_rows + qk_cols
+    q = tl.load(q_ptr + b_offset + qk_addrs)
+    k = tl.load(k_ptr + b_offset + qk_addrs)
 
-    seq_pos = pid % S
-    sc_offset = seq_pos * D + dr
-    sin = tl.load(sin_ptr + sc_offset)
-    cos = tl.load(cos_ptr + sc_offset)
+    rot_addrs = qk_rows + tl.where(qk_cols < d_half, qk_cols + d_half, qk_cols - d_half)
+    sign = tl.where(qk_cols < d_half, -1.0, 1.0)
 
-    partner_local = tl.where(dr < half_D, dr + half_D, dr - half_D)
-    partner_idx = pid * D + partner_local
-    sign = tl.where(dr < half_D, -1.0, 1.0)
+    qrot = tl.load(q_ptr + b_offset + rot_addrs) * sign
+    krot = tl.load(k_ptr + b_offset + rot_addrs) * sign
 
-    q_rotated = tl.load(q_ptr + partner_idx) * sign
-    k_rotated = tl.load(k_ptr + partner_idx) * sign
+    sin = tl.load(sin_ptr + qk_addrs)
+    cos = tl.load(cos_ptr + qk_addrs)
 
-    q_embed = q * cos + q_rotated * sin
-    k_embed = k * cos + k_rotated * sin
+    q_embed = (q * cos) + (qrot * sin)
+    k_embed = (k * cos) + (krot * sin)
 
-    tl.store(qo_ptr + gr, q_embed)
-    tl.store(ko_ptr + gr, k_embed)
+    # write them out
+    tl.store(qrot_ptr + b_offset + qk_addrs, q_embed)
+    tl.store(krot_ptr + b_offset + qk_addrs, k_embed)
 
 
 class MarineRoPE(torch.autograd.Function):
     @staticmethod
     def forward(ctx, q: torch.Tensor, k: torch.Tensor, sin_cached: torch.Tensor, cos_cached: torch.Tensor):
-        (B, S, D) = q.shape
-        assert (D & (D - 1) == 0) and D != 0  # power of 2
+        if q.shape[-1] % 2 != 0 or k.shape[-1] % 2 != 0:
+            raise ValueError("Dimension must be even.")
 
-        M = B * S
+        B, S, D = q.shape
 
-        q = q.reshape(-1, D)
-        k = k.reshape(-1, D)
+        qrot = torch.empty_like(q)
+        krot = torch.empty_like(k)
 
-        qo = torch.empty_like(q)
-        ko = torch.empty_like(k)
+        _rope_fwd[(B,)](q, k, sin_cached, cos_cached, qrot, krot, B, S, D)
 
-        _rope_fwd[(M,)](q, k, sin_cached, cos_cached, qo, ko, B, S, D)
-
-        qo = qo.reshape(B, S, D)
-        ko = ko.reshape(B, S, D)
-
-        ctx.save_for_backward(sin_cached, cos_cached)
-        return qo, ko
+        return qrot, krot
 
     @staticmethod
     def backward(ctx, dqo, dko):
