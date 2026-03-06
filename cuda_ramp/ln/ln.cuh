@@ -11,7 +11,7 @@ static __device__ __forceinline__ float warp_reduce_sum(float val) {
 static __device__ __forceinline__ float thread_reduce_sum(const __nv_bfloat16* input, int BLOCK_SIZE, int N) {
     const int tid = threadIdx.x;
     const int row = blockIdx.y;
-    int step = 128 / sizeof(__nv_bfloat16);
+    int step = 8;
     float sum = 0.0f;
     for (int idx = tid * step; idx < N; idx += BLOCK_SIZE * step) {
         uint4 raw = reinterpret_cast<const uint4*>(&input[row * N + idx])[0];

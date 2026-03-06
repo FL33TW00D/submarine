@@ -15,10 +15,12 @@ __global__ void ln_kernel(const __nv_bfloat16* input, __nv_bfloat16* output, flo
     __syncthreads();
 
     int num_warps = BLOCK_SIZE / warpSize;
+    unsigned mask = (1u << num_warps) - 1;  // 0xFF for 8 warps
+
     if (warp_id == 0 && tid < num_warps) {
         float val = shmem[tid];
         for (int offset = num_warps / 2; offset > 0; offset >>= 1)
-            val += __shfl_down_sync(0xffffffff, val, offset);
+            val += __shfl_down_sync(mask, val, offset);
         if (tid == 0)
             shmem[0] = val;
     }
@@ -31,7 +33,7 @@ __global__ void ln_kernel(const __nv_bfloat16* input, __nv_bfloat16* output, flo
     float sq_shift_sum = 0.0f;
     int count = 0;
 
-    int step = 128 / sizeof(__nv_bfloat16);
+    int step = 8; 
     for (int idx = tid * step; idx < N; idx += BLOCK_SIZE * step) {
         uint4 raw = reinterpret_cast<const uint4*>(&input[row * N + idx])[0];
         __nv_bfloat162* pairs = reinterpret_cast<__nv_bfloat162*>(&raw);
@@ -57,7 +59,7 @@ __global__ void ln_kernel(const __nv_bfloat16* input, __nv_bfloat16* output, flo
     if (warp_id == 0 && tid < num_warps) {
         float val = shmem[tid];
         for (int offset = num_warps / 2; offset > 0; offset >>= 1)
-            val += __shfl_down_sync(0xffffffff, val, offset);
+            val += __shfl_down_sync(mask, val, offset);
         if (tid == 0)
             shmem[0] = val;
     }
