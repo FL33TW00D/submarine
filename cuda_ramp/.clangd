@@ -1,0 +1,8 @@
+CompileFlags:
+  Add:
+    - -x
+    - cuda
+    - --cuda-gpu-arch=sm_86
+    - -I/usr/local/cuda/include
+    - -std=c++17
+  Compiler: clang-15
