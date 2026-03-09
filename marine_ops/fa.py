@@ -70,7 +70,7 @@ def _fa_fwd(
     gmax = tl.full((Br,), float("-inf"), tl.float32)
     lse = tl.zeros((Br,), tl.float32)
 
-    for t in tl.range(0, Tr, warp_specialize=False):
+    for t in tl.range(0, Tr, warp_specialize=True):
         kv_addrs = bh_offset + (t * Bc * D) + tl.arange(0, Bc)[:, None] * D + tl.arange(0, D)
         k = tl.load(k_ptr + kv_addrs)  # TODO: mask
         v = tl.load(v_ptr + kv_addrs)
