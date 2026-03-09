@@ -91,8 +91,9 @@ def _fa_fwd(
     lse = gmax + tl.log(lse)
 
     tl.store(out_ptr + qo_addrs, out.to(tl.bfloat16))
-    # lse_addrs = bh_offset + (pid_1 * Br) + tl.arange(0, Br)
-    # tl.store(lse_ptr + lse_addrs, lse)
+
+    lse_addrs = (pid_0 * T) + (pid_1 * Br) + tl.arange(0, Br)
+    tl.store(lse_ptr + lse_addrs, lse)
 
 
 """
@@ -154,9 +155,9 @@ class MarineFA(torch.autograd.Function):
             Tc,
         )
 
-        print(f"Physical regs/thread: {compiled.n_regs}")
-        print(f"Spills:               {compiled.n_spills}")
-        print(f"SMEM:                 {compiled.metadata.shared} bytes")
+        # print(f"Physical regs/thread: {compiled.n_regs}")
+        # print(f"Spills:               {compiled.n_spills}")
+        # print(f"SMEM:                 {compiled.metadata.shared} bytes")
 
         ctx.save_for_backward(q, k, v, out, lse)
 
