@@ -86,7 +86,7 @@ def _fa_fwd(
     qk_scale = sf
     qk_scale *= log2_e
 
-    q = tl.load(q_ptr + qo_addrs) * qk_scale.to(tl.bfloat16)  # TODO: mask
+    q = (tl.load(q_ptr + qo_addrs).to(tl.float32) * qk_scale).to(tl.bfloat16)  # TODO: mask
 
     out = tl.zeros((Br, D), tl.float32)
     gmax = tl.full((Br,), float("-inf"), tl.float32)
@@ -95,7 +95,6 @@ def _fa_fwd(
     for t in tl.range(0, Tc, warp_specialize=True):
         kv_addrs = bh_offset + (t * Bc * D) + tl.arange(0, Bc)[:, None] * D + tl.arange(0, D)
         k = tl.load(k_ptr + kv_addrs)  # TODO: mask
-        v = tl.load(v_ptr + kv_addrs)
 
         s = tl.dot(q, tl.trans(k))  # [Br, Bc]
 
@@ -107,6 +106,7 @@ def _fa_fwd(
         lse = lse * alpha + tl.sum(p, axis=-1)
         gmax = nmax
 
+        v = tl.load(v_ptr + kv_addrs)
         out = out * alpha[:, None] + tl.dot(p.to(v.dtype), v)
 
     out /= lse[:, None]

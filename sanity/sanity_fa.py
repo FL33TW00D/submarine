@@ -20,15 +20,15 @@ def test_fa(B, Hq, Hkv, S, T, D, dtype, device=DEVICE):
 
     y_tri = MarineFA.apply(Q, K, V)
 
-    # y_ref = F.scaled_dot_product_attention(Q, K, V)
-    # print("Ours forward: ", y_tri)
-    # print("Torch forward: ", y_ref)
+    y_ref = F.scaled_dot_product_attention(Q, K, V)
+    print("Ours forward: ", y_tri)
+    print("Torch forward: ", y_ref)
 
-    # max_diff = torch.max(torch.abs(y_ref - y_tri))
-    # print(max_diff)
+    max_diff = torch.max(torch.abs(y_ref - y_tri))
+    print(max_diff)
 
-    # assert torch.allclose(y_tri, y_ref, atol=5e-3, rtol=0)
-    # print("Test passed!")
+    assert torch.allclose(y_tri, y_ref, atol=5e-3, rtol=0)
+    print("Test passed!")
 
 
 def test_fa_bwd(B, Hq, Hkv, S, T, D, dtype, device=DEVICE):
@@ -99,7 +99,7 @@ def bench_fa(B, Hq, Hkv, S, T, D, dtype, device=DEVICE):
     print(f"  Speedup: {ms_flash / ms_ours:.2f}x")
 
 
-# test_fa(B=4, Hq=16, Hkv=16, S=2048, T=2048, D=128, dtype=torch.bfloat16)
+# test_fa(B=8, Hq=16, Hkv=16, S=2048, T=2048, D=128, dtype=torch.bfloat16)
 # test_fa_bwd(B=4, Hq=16, Hkv=16, S=2048, T=2048, D=128, dtype=torch.bfloat16)
 # test_fa_flash(B=4, Hq=16, Hkv=16, S=2048, T=2048, D=128, dtype=torch.bfloat16)
-bench_fa(B=4, Hq=16, Hkv=16, S=2048, T=2048, D=128, dtype=torch.bfloat16)
+bench_fa(B=8, Hq=16, Hkv=16, S=2048, T=2048, D=128, dtype=torch.bfloat16)
