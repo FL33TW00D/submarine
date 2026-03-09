@@ -35,8 +35,64 @@ pid_0 is B*Hq, pid_1 is chunk of Q
 
 
 @triton.jit
-def _fa_fwd():
-    pass
+def _fa_fwd(
+    q_ptr,  # [B, Hq, T, D]
+    k_ptr,  # [B, Hk, S, D]
+    v_ptr,
+    out_ptr,
+    lse_ptr,  # [B, Hq, T]
+    sf,
+    B: tl.constexpr,
+    Hq: tl.constexpr,
+    T: tl.constexpr,
+    D: tl.constexpr,
+    Hk: tl.constexpr,
+    S: tl.constexpr,
+    Br: tl.constexpr,
+    Bc: tl.constexpr,
+    Tr: tl.constexpr,
+    Tc: tl.constexpr,
+):
+    # Each program solves a chunk of Q sequence
+    # Requires loading the FULL K and V sequence, so increasing Br is good for memory reuse
+    # Must be on hopper to get benefit from GQA, as head mats can be multicast to multiple SMs
+
+    pid_0 = tl.program_id(0)  # B*Hq
+    pid_1 = tl.program_id(1)  # Tr
+
+    bh_offset = pid_0 * T * D
+    br_offset = pid_1 * Br * D
+
+    qo_addrs = bh_offset + br_offset + tl.arange(0, Br)[:, None] * D + tl.arange(0, D)
+    q = tl.load(q_ptr + qo_addrs) * sf.to(tl.bfloat16)  # TODO: mask
+
+    out = tl.zeros((Br, D), tl.float32)
+    gmax = tl.full((Br,), float("-inf"), tl.float32)
+    lse = tl.zeros((Br,), tl.float32)
+
+    for t in tl.range(0, Tr, warp_specialize=False):
+        kv_addrs = bh_offset + (t * Bc * D) + tl.arange(0, Bc)[:, None] * D + tl.arange(0, D)
+        k = tl.load(k_ptr + kv_addrs)  # TODO: mask
+        v = tl.load(v_ptr + kv_addrs)
+
+        s = tl.dot(q, tl.trans(k))  # [Br, Bc]
+
+        cmax = tl.max(s, axis=-1)
+        nmax = tl.maximum(gmax, cmax)  # [Br]
+
+        p = tl.exp(s - nmax[:, None])
+        alpha = tl.exp(gmax - nmax)  # nmax > gmax, e.g exp(-0.5) ~= 0.6, scales down prior contributions
+        lse = lse * alpha + tl.sum(p, axis=-1)
+        gmax = nmax
+
+        out = out * alpha[:, None] + tl.dot(p, v.to(tl.float32))
+
+    out /= lse[:, None]
+    lse = gmax + tl.log(lse)
+
+    tl.store(out_ptr + qo_addrs, out.to(tl.bfloat16))
+    # lse_addrs = bh_offset + (pid_1 * Br) + tl.arange(0, Br)
+    # tl.store(lse_ptr + lse_addrs, lse)
 
 
 """
@@ -70,7 +126,33 @@ class MarineFA(torch.autograd.Function):
 
         sf = 1.0 / math.sqrt(D)
 
-        compiled = _fa_fwd[()]()
+        Br = 64
+        Bc = 64
+
+        Tr = math.ceil(T / Br)
+        Tc = math.ceil(T / Bc)
+
+        # Parallelize over batch and heads and sequence in FA2
+        # Using Tr means parallelizing over query
+
+        compiled = _fa_fwd[(B * Hq, Tr)](
+            q,
+            k,
+            v,
+            out,
+            lse,
+            sf,
+            B,
+            Hq,
+            T,
+            D,
+            Hk,
+            S,
+            Br,
+            Bc,
+            Tr,
+            Tc,
+        )
 
         print(f"Physical regs/thread: {compiled.n_regs}")
         print(f"Spills:               {compiled.n_spills}")

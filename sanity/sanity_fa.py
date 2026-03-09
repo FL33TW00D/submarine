@@ -77,6 +77,6 @@ def test_fa_flash(B, Hq, Hkv, S, T, D, dtype, device=DEVICE):
     return y
 
 
-# test_fa(B=4, Hq=16, Hkv=16, S=2048, T=2048, D=128, dtype=torch.bfloat16)
-test_fa_bwd(B=4, Hq=16, Hkv=16, S=2048, T=2048, D=128, dtype=torch.bfloat16)
+test_fa(B=4, Hq=16, Hkv=16, S=2048, T=2048, D=128, dtype=torch.bfloat16)
+# test_fa_bwd(B=4, Hq=16, Hkv=16, S=2048, T=2048, D=128, dtype=torch.bfloat16)
 # test_fa_flash(B=4, Hq=16, Hkv=16, S=2048, T=2048, D=128, dtype=torch.bfloat16)
