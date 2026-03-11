@@ -77,6 +77,29 @@ def test_fa_flash(B, Hq, Hkv, S, T, D, dtype, device=DEVICE):
     return y
 
 
-# test_fa(B=4, Hq=16, Hkv=16, S=2048, T=2048, D=128, dtype=torch.bfloat16)
-test_fa_bwd(B=4, Hq=16, Hkv=16, S=2048, T=2048, D=128, dtype=torch.bfloat16)
+def bench_fa(B, Hq, Hkv, S, T, D, dtype, device=DEVICE):
+    from flash_attn import flash_attn_func
+
+    # Ours: (B, H, T, D)
+    Q = torch.randn((B, Hq, T, D), dtype=dtype, device=device)
+    K = torch.randn((B, Hkv, S, D), dtype=dtype, device=device)
+    V = torch.randn((B, Hkv, S, D), dtype=dtype, device=device)
+
+    # Flash: (B, S, H, D)
+    Q_flash = Q.transpose(1, 2).contiguous()
+    K_flash = K.transpose(1, 2).contiguous()
+    V_flash = V.transpose(1, 2).contiguous()
+
+    ms_ours = triton.testing.do_bench(lambda: MarineFA.apply(Q, K, V))
+    ms_flash = triton.testing.do_bench(lambda: flash_attn_func(Q_flash, K_flash, V_flash))
+
+    print(f"B={B}, Hq={Hq}, Hkv={Hkv}, S={S}, T={T}, D={D}, dtype={dtype}")
+    print(f"  Ours:  {ms_ours:.3f} ms")
+    print(f"  Flash: {ms_flash:.3f} ms")
+    print(f"  Speedup: {ms_flash / ms_ours:.2f}x")
+
+
+# test_fa(B=8, Hq=16, Hkv=16, S=2048, T=2048, D=128, dtype=torch.bfloat16)
+# test_fa_bwd(B=4, Hq=16, Hkv=16, S=2048, T=2048, D=128, dtype=torch.bfloat16)
 # test_fa_flash(B=4, Hq=16, Hkv=16, S=2048, T=2048, D=128, dtype=torch.bfloat16)
+bench_fa(B=8, Hq=16, Hkv=16, S=2048, T=2048, D=128, dtype=torch.bfloat16)
